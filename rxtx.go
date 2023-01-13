@@ -1,6 +1,7 @@
 package peamodbus
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -108,6 +109,92 @@ func (rx *Rx) handleErr(err error) {
 		return
 	}
 	rx.trp.Close()
+}
+
+// TxBuffered handles the marshalling of frames over a underlying transport.
+type TxBuffered struct {
+	buf         bytes.Buffer
+	trp         io.WriteCloser
+	TxCallbacks TxCallbacks
+}
+
+// NewTxBuffered creates a new TxBuffered ready for use.
+func NewTxBuffered(wc io.WriteCloser) *TxBuffered {
+	return &TxBuffered{trp: wc}
+}
+
+// SetTxTransport sets the underlying TxBuffered transport writer.
+func (tx *TxBuffered) SetTxTransport(wc io.WriteCloser) {
+	tx.trp = wc
+}
+
+// TxCallbacks stores functions to be called on events during marshalling of websocket frames.
+type TxCallbacks struct {
+	// OnError is called when
+	OnError func(tx *TxBuffered, err error)
+}
+
+func (tx *TxBuffered) handleErr(err error) {
+	if tx.TxCallbacks.OnError != nil {
+		tx.TxCallbacks.OnError(tx, err)
+		return
+	}
+	tx.trp.Close()
+}
+
+func (tx *TxBuffered) RequestReadHoldingRegisters(mbap ApplicationHeader, startAddr, numberOfRegisters uint16) (int, error) {
+	mbap.Length = 6
+	tx.buf.Reset()
+	if _, err := mbap.Encode(&tx.buf); err != nil {
+		return 0, err
+	}
+
+	var buf [4]byte
+	binary.BigEndian.PutUint16(buf[:2], startAddr)
+	binary.BigEndian.PutUint16(buf[2:4], numberOfRegisters)
+	_, err := writeFunctionCode(&tx.buf, FCReadHoldingRegister, buf[:4])
+	if err != nil {
+		return 0, err
+	}
+	n, err := tx.buf.WriteTo(tx.trp)
+	if n != 0 {
+		tx.handleErr(err)
+		return int(n), err
+	}
+	return int(n), nil
+}
+
+func (tx *TxBuffered) ResponseReadHoldingRegisters(mbap ApplicationHeader, registerData []byte) (int, error) {
+	var buf [256]byte
+	if len(registerData)%2 != 0 || len(registerData) > 255 {
+		return 0, errors.New("register data length must be multiple of 2 and less than 255 in length")
+	}
+	buf[0] = byte(len(registerData)) // Amount of bytes to read. Modbus spec defines N = Quantity of registers.
+	mbap.Length = 3 + uint16(buf[0])
+	tx.buf.Reset()
+	if _, err := mbap.Encode(&tx.buf); err != nil {
+		return 0, err
+	}
+	copy(buf[1:], registerData)
+	_, err := writeFunctionCode(&tx.buf, FCReadHoldingRegister, buf[:len(registerData)])
+	if err != nil {
+		return 0, err
+	}
+	n, err := tx.buf.WriteTo(tx.trp)
+	if err != nil {
+		tx.handleErr(err)
+		return int(n), err
+	}
+	return int(n), nil
+}
+
+func writeFunctionCode(w io.Writer, fc FunctionCode, data []byte) (int, error) {
+	err := encodeByte(w, byte(fc))
+	if err != nil {
+		return 0, err
+	}
+	n, err := writeFull(w, data)
+	return n + 1, err
 }
 
 // ApplicationHeader is a compact representation of the MBAP header as described
