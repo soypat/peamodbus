@@ -1,7 +1,6 @@
 package peamodbus
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -20,7 +19,7 @@ const (
 
 type Server struct {
 	rx        Rx
-	tx        TxBuffered
+	tx        Tx
 	state     serverState
 	address   net.Addr
 	keepalive time.Duration
@@ -36,16 +35,16 @@ type ServerConfig struct {
 	KeepAlive time.Duration
 	// Used for transmit operations so they happen in a single TCP frame as suggested by Modbus.
 	// If set to nil a default size of 256 bytes will be allocated.
-	TxBuffer []byte
+	// TxBuffer []byte
 }
 
 func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.KeepAlive == 0 {
 		cfg.KeepAlive = defaultKeepalive
 	}
-	if cfg.TxBuffer == nil {
-		cfg.TxBuffer = make([]byte, 256)
-	}
+	// if cfg.TxBuffer == nil {
+	// 	cfg.TxBuffer = make([]byte, 256)
+	// }
 	colons := strings.Count(cfg.Address, ":")
 	if colons > 1 {
 		return nil, errors.New("too many colons in address, ipv6 not supported")
@@ -56,8 +55,8 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		address:   &tcpaddr{address: cfg.Address},
 		keepalive: cfg.KeepAlive,
 		state:     serverState{closeErr: net.ErrClosed},
-		tx: TxBuffered{
-			buf: *bytes.NewBuffer(cfg.TxBuffer),
+		tx:        Tx{
+			// buf: *bytes.NewBuffer(cfg.TxBuffer),
 		},
 	}
 	sv.rx.RxCallbacks, sv.tx.TxCallbacks = sv.state.callbacks()
@@ -90,6 +89,22 @@ func (sv *Server) Connect(ctx context.Context) error {
 	sv.rx.SetRxTransport(conn)
 	sv.tx.SetTxTransport(conn)
 	return nil
+}
+
+func (sv *Server) HandleNext() error {
+	_, err := sv.rx.ReadNext()
+	if err != nil {
+		return err
+	}
+	return sv.state.handlePendingRequests(&sv.tx)
+}
+
+func (sv *Server) Err() error {
+	return sv.state.Err()
+}
+
+func (sv *Server) IsConnected() bool {
+	return sv.state.IsConnected()
 }
 
 // serverState stores the persisting state of a websocket server connection.
@@ -145,6 +160,29 @@ func (cs *serverState) NewPendingRequest(r request) {
 	cs.mu.Unlock()
 }
 
+func (cs *serverState) handlePendingRequests(tx *Tx) error {
+	cs.mu.Lock()
+	i := len(cs.pendingRequests) - 1
+	defer func() {
+		cs.pendingRequests = cs.pendingRequests[:i]
+		cs.mu.Unlock()
+	}()
+	var err error
+	for ; i >= 0; i-- {
+		req := cs.pendingRequests[i]
+		switch req.fc {
+		case FCReadHoldingRegister:
+			mbap := ApplicationHeader{Transaction: req.transaction, Protocol: 0, Unit: req.unit}
+			quantityBytes := req.reqVal2 * 2
+			tx.TxCallbacks.OnDataAccess(tx, req.fc, req.reqVal1, tx.buf[:quantityBytes])
+			_, err = tx.ResponseReadHoldingRegisters(mbap, tx.buf[:quantityBytes])
+		default:
+			err = fmt.Errorf("unhandled request function code 0x%#X (%d)", req.fc, req.fc)
+		}
+	}
+	return err
+}
+
 func (cs *serverState) callbacks() (RxCallbacks, TxCallbacks) {
 	return RxCallbacks{
 			OnError: func(rx *Rx, err error) {
@@ -162,7 +200,7 @@ func (cs *serverState) callbacks() (RxCallbacks, TxCallbacks) {
 				return nil
 			},
 		}, TxCallbacks{
-			OnError: func(tx *TxBuffered, err error) {
+			OnError: func(tx *Tx, err error) {
 				cs.CloseConn(err)
 				tx.trp.Close()
 			},
