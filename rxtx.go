@@ -70,9 +70,9 @@ func (rx *Rx) ReadNext() (int, error) {
 	}
 	fc := FunctionCode(buf[0])
 	switch fc {
-	case FCReadCoils, FCReadDiscreteInputs, FCReadHoldingRegister, FCReadInputRegister,
+	case FCReadCoils, FCReadDiscreteInputs, FCReadHoldingRegisters, FCReadInputRegisters,
 		FCWriteSingleCoil, FCWriteSingleRegister, FCWriteMultipleRegisters, FCReadFileRecord,
-		FCWriteFileRecord, FCMaskWriteRegister, FCReadWriteMultipledRegisters, FCReadFIFOQueue:
+		FCWriteFileRecord, FCMaskWriteRegister, FCReadWriteMultipleRegisters, FCReadFIFOQueue:
 		if rx.RxCallbacks.OnDataAccess != nil {
 			err = rx.RxCallbacks.OnDataAccess(rx, fc, lr)
 		} else {
@@ -130,8 +130,8 @@ func (tx *Tx) SetTxTransport(wc io.WriteCloser) {
 // TxCallbacks stores functions to be called on events during marshalling of websocket frames.
 type TxCallbacks struct {
 	// OnError is called when
-	OnError      func(tx *Tx, err error)
-	OnDataAccess func(tx *Tx, fc FunctionCode, startAddr uint16, dst []byte) error
+	OnError func(tx *Tx, err error)
+	// OnDataAccess func(tx *Tx, fc FunctionCode, startAddr uint16, dst []byte) error
 }
 
 func (tx *Tx) handleErr(err error) {
@@ -147,7 +147,7 @@ func (tx *Tx) RequestReadHoldingRegisters(mbap ApplicationHeader, startAddr, num
 	var buf [4]byte
 	binary.BigEndian.PutUint16(buf[:2], startAddr)
 	binary.BigEndian.PutUint16(buf[2:4], numberOfRegisters)
-	return tx.writeSimple(mbap, FCReadHoldingRegister, buf[:4])
+	return tx.writeSimple(mbap, FCReadHoldingRegisters, buf[:4])
 }
 
 func (tx *Tx) ResponseReadHoldingRegisters(mbap ApplicationHeader, registerData []byte) (int, error) {
@@ -156,7 +156,7 @@ func (tx *Tx) ResponseReadHoldingRegisters(mbap ApplicationHeader, registerData 
 	}
 	ln := byte(len(registerData))
 	mbap.Length = 3 + uint16(ln)
-	return tx.writeSimpleU8(mbap, FCReadHoldingRegister, ln, registerData)
+	return tx.writeSimpleU8(mbap, FCReadHoldingRegisters, ln, registerData)
 }
 
 var errResponseTooLarge = errors.New("response data too large, this may be a bug with peamodbus. file an issue")

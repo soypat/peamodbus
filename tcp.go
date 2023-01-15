@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -17,12 +18,16 @@ const (
 	defaultPort      = ":502"
 )
 
+// Server is a Modbus TCP Server implementation. A Server listens on a network
+// and awaits a client's request. Servers are typically sensors or actuators in an industrial setting.
 type Server struct {
-	rx        Rx
-	tx        Tx
-	state     serverState
-	address   net.Addr
-	keepalive time.Duration
+	state serverState
+
+	keepalive  time.Duration
+	tcpTimeout time.Duration
+	rx         Rx
+	tx         Tx
+	address    net.TCPAddr
 }
 
 type ServerConfig struct {
@@ -33,58 +38,52 @@ type ServerConfig struct {
 	// in order to poll whether either has crashed. By default is set to 2 hours
 	// as specified by the Modbus TCP/IP Implementation Guidelines.
 	KeepAlive time.Duration
-	// Used for transmit operations so they happen in a single TCP frame as suggested by Modbus.
-	// If set to nil a default size of 256 bytes will be allocated.
-	// TxBuffer []byte
+	// Timeout is the maximum amount of time a dial will wait for a connect to complete. If Deadline is also set, it may fail earlier.
+	NetTimeout time.Duration
+	// DataModel defines the data bank used for data access operations
+	// such as read/write operations with coils, discrete inputs, holding registers etc.
+	// If nil a default data model will be chosen.
+	DataModel DataModel
 }
 
 func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.KeepAlive == 0 {
 		cfg.KeepAlive = defaultKeepalive
 	}
-	// if cfg.TxBuffer == nil {
-	// 	cfg.TxBuffer = make([]byte, 256)
-	// }
-	colons := strings.Count(cfg.Address, ":")
-	if colons > 1 {
-		return nil, errors.New("too many colons in address, ipv6 not supported")
-	} else if colons == 0 {
-		cfg.Address += defaultPort //Add default port.
+	if cfg.DataModel == nil {
+		cfg.DataModel = &StaticModel{}
 	}
+	cfg.Address = strings.Replace(cfg.Address, "localhost", "127.0.0.1", 1)
+	address, err := netip.ParseAddrPort(cfg.Address)
+	if err != nil {
+		return nil, err
+	}
+
 	sv := &Server{
-		address:   &tcpaddr{address: cfg.Address},
-		keepalive: cfg.KeepAlive,
-		state:     serverState{closeErr: net.ErrClosed},
-		tx:        Tx{
-			// buf: *bytes.NewBuffer(cfg.TxBuffer),
-		},
+		state:      serverState{closeErr: net.ErrClosed, data: cfg.DataModel},
+		tcpTimeout: cfg.NetTimeout,
+		keepalive:  cfg.KeepAlive,
+		address:    *net.TCPAddrFromAddrPort(address),
 	}
 	sv.rx.RxCallbacks, sv.tx.TxCallbacks = sv.state.callbacks()
 	return sv, nil
 }
 
-type tcpaddr struct {
-	address string
-}
-
-func (a *tcpaddr) Network() string { return "tcp" }
-func (a *tcpaddr) String() string  { return a.address }
-
-func (sv *Server) Connect(ctx context.Context) error {
+func (sv *Server) Accept(ctx context.Context) error {
 	if sv.state.IsConnected() {
 		return errors.New("already connected or incorrectly initialized client/server")
 	}
-	dialer := net.Dialer{
-		Timeout:   time.Second,
-		KeepAlive: sv.keepalive,
-		LocalAddr: sv.address,
+	listener, err := net.ListenTCP("tcp", &sv.address)
+	if err != nil {
+		return err
 	}
-	conn, err := dialer.DialContext(ctx, sv.address.Network(), sv.address.String())
+	conn, err := listener.AcceptTCP()
 	if err != nil {
 		return err
 	}
 	sv.state.mu.Lock()
 	sv.state.closeErr = nil
+	sv.state.listener = listener
 	sv.state.mu.Unlock()
 	sv.rx.SetRxTransport(conn)
 	sv.tx.SetTxTransport(conn)
@@ -96,7 +95,7 @@ func (sv *Server) HandleNext() error {
 	if err != nil {
 		return err
 	}
-	return sv.state.handlePendingRequests(&sv.tx)
+	return sv.state.HandlePendingRequests(&sv.tx)
 }
 
 func (sv *Server) Err() error {
@@ -112,6 +111,8 @@ func (sv *Server) IsConnected() bool {
 // the Client implementation is concurrent-safe.
 type serverState struct {
 	mu       sync.Mutex
+	listener *net.TCPListener
+	data     DataModel
 	closeErr error
 	//
 	pendingRequests []request
@@ -134,6 +135,7 @@ func (cs *serverState) CloseConn(err error) {
 	}
 	cs.mu.Lock()
 	cs.closeErr = err
+	cs.listener.Close()
 	cs.mu.Unlock()
 }
 
@@ -160,25 +162,32 @@ func (cs *serverState) NewPendingRequest(r request) {
 	cs.mu.Unlock()
 }
 
-func (cs *serverState) handlePendingRequests(tx *Tx) error {
+func (cs *serverState) HandlePendingRequests(tx *Tx) (err error) {
 	cs.mu.Lock()
 	i := len(cs.pendingRequests) - 1
 	defer func() {
 		cs.pendingRequests = cs.pendingRequests[:i]
 		cs.mu.Unlock()
 	}()
-	var err error
 	for ; i >= 0; i-- {
 		req := cs.pendingRequests[i]
 		switch req.fc {
-		case FCReadHoldingRegister:
+		case FCReadHoldingRegisters:
 			mbap := ApplicationHeader{Transaction: req.transaction, Protocol: 0, Unit: req.unit}
 			quantityBytes := req.reqVal2 * 2
-			tx.TxCallbacks.OnDataAccess(tx, req.fc, req.reqVal1, tx.buf[:quantityBytes])
+			err = cs.data.Read(tx.buf[:quantityBytes], req.fc, req.reqVal1)
+			if err != nil {
+				err = fmt.Errorf("handling fc=0x%#X accessing data model: %w", req.fc, err)
+				break
+			}
+			// tx.TxCallbacks.OnDataAccess(tx, req.fc, req.reqVal1, tx.buf[:quantityBytes])
 			_, err = tx.ResponseReadHoldingRegisters(mbap, tx.buf[:quantityBytes])
 		default:
 			err = fmt.Errorf("unhandled request function code 0x%#X (%d)", req.fc, req.fc)
 		}
+	}
+	if i < 0 {
+		i = 0
 	}
 	return err
 }
@@ -193,7 +202,7 @@ func (cs *serverState) callbacks() (RxCallbacks, TxCallbacks) {
 				return fmt.Errorf("got exception with code %d", exceptCode)
 			},
 			// See dataHandler method on cs.
-			OnDataAccess: cs.requestHandler,
+			OnDataAccess: cs.dataRequestHandler,
 			OnUnhandled: func(rx *Rx, fc FunctionCode, r io.Reader) error {
 				fmt.Printf("got unhandled function code %d\n", fc)
 				io.ReadAll(r)
@@ -207,15 +216,15 @@ func (cs *serverState) callbacks() (RxCallbacks, TxCallbacks) {
 		}
 }
 
-func (cs *serverState) requestHandler(rx *Rx, fc FunctionCode, r io.Reader) (err error) {
+func (cs *serverState) dataRequestHandler(rx *Rx, fc FunctionCode, r io.Reader) (err error) {
 	var buf [256]byte
 	var n int
 	switch fc {
 
 	// Simplest Modbus request case consisting of a address and a quantity
-	case FCReadHoldingRegister, FCReadInputRegister, FCReadCoils, FCReadDiscreteInputs,
-		FCWriteSingleCoil, FCWriteSingleRegister:
-		n, err = io.ReadFull(r, buf[:])
+	case FCReadHoldingRegisters, FCReadInputRegisters, FCReadCoils, FCReadDiscreteInputs,
+		FCWriteSingleCoil, FCWriteSingleRegister, FCWriteMultipleRegisters:
+		n, err = io.ReadAtLeast(r, buf[:], 4)
 		if err != nil {
 			break
 		} else if n != 4 {
