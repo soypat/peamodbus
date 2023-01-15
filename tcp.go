@@ -52,7 +52,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	// 	cfg.KeepAlive = defaultKeepalive
 	// }
 	if cfg.DataModel == nil {
-		cfg.DataModel = &StaticModel{}
+		cfg.DataModel = &BlockedModel{}
 	}
 	cfg.Address = strings.Replace(cfg.Address, "localhost", "127.0.0.1", 1)
 	address, err := netip.ParseAddrPort(cfg.Address)
@@ -110,6 +110,15 @@ func (sv *Server) Err() error {
 
 func (sv *Server) IsConnected() bool {
 	return sv.state.IsConnected()
+}
+
+func (sv *Server) Addr() net.Addr {
+	sv.state.mu.Lock()
+	defer sv.state.mu.Unlock()
+	if sv.state.listener == nil {
+		return &net.TCPAddr{}
+	}
+	return sv.state.listener.Addr()
 }
 
 // serverState stores the persisting state of a websocket server connection.

@@ -12,7 +12,7 @@ import (
 // all holding registers on every client request.
 
 func main() {
-	var dataBank peamodbus.StaticModel
+	var dataBank peamodbus.BlockedModel
 	sv, err := peamodbus.NewServer(peamodbus.ServerConfig{
 		Address:    "localhost:8080",
 		NetTimeout: 5 * time.Second,

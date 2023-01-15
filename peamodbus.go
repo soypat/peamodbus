@@ -42,9 +42,10 @@ type DataModel interface {
 	Write(fc FunctionCode, startAdress uint16, data []byte) error
 }
 
-// StaticModel is a memory constrained DataModel implementation.
-// A non-nil StaticModel is ready for use after being declared.
-type StaticModel struct {
+// BlockedModel is a memory constrained DataModel implementation.
+// Each data type (coil, registers) occupies its own block/segment of memory.
+// A non-nil BlockedModel is ready for use after being declared.
+type BlockedModel struct {
 	HoldingRegisters [125]uint16
 	InputRegisters   [125]uint16
 	// There are 2000 coils which can be ON (1) or OFF (0).
@@ -54,38 +55,108 @@ type StaticModel struct {
 	discreteInputs [125]uint16
 }
 
-func (dm *StaticModel) Read(dst []byte, fc FunctionCode, startAddress uint16) error {
-	if fc != FCReadHoldingRegisters {
+func (dm *BlockedModel) Read(dst []byte, fc FunctionCode, startAddress uint16) error {
+	shortSize := fc == FCReadHoldingRegisters || fc == FCReadInputRegisters
+	switch {
+	case !shortSize && fc != FCReadCoils && fc != FCReadDiscreteInputs:
 		return errors.New("unsupported read action")
-	}
-	if len(dst)%2 != 0 {
+	case shortSize && len(dst)%2 != 0:
 		return errors.New("uneven number of bytes in dst")
-	}
-	if startAddress+uint16(len(dst))/2 >= 125 {
+	case shortSize && startAddress+uint16(len(dst))/2 >= 125 || len(dst)+int(startAddress) > 2000:
 		return errors.New("read request exceeds model's size")
 	}
+
 	ireg := startAddress
-	for i := 0; i < len(dst); i += 2 {
-		binary.BigEndian.PutUint16(dst[i:], dm.HoldingRegisters[ireg])
+	stride := 1
+	if shortSize {
+		stride = 2
+	}
+	for i := 0; i < len(dst); i += stride {
+		switch fc {
+		case FCReadHoldingRegisters:
+			binary.BigEndian.PutUint16(dst[i:], dm.HoldingRegisters[ireg])
+		case FCReadInputRegisters:
+			binary.BigEndian.PutUint16(dst[i:], dm.InputRegisters[ireg])
+		case FCReadCoils:
+			dst[i] = dm.GetCoil(int(ireg))
+		case FCReadDiscreteInputs:
+			dst[i] = dm.GetDiscreteInput(int(ireg))
+		}
 		ireg++
 	}
 	return nil
 }
 
-func (dm *StaticModel) Write(fc FunctionCode, startAddress uint16, data []byte) error {
-	if fc != FCWriteMultipleRegisters {
+func (dm *BlockedModel) Write(fc FunctionCode, startAddress uint16, data []byte) error {
+	shortSize := fc == FCWriteMultipleRegisters
+	switch {
+	case !shortSize && fc != FCWriteSingleCoil:
 		return errors.New("unsupported write action")
-	}
-	if len(data)%2 != 0 {
+	case shortSize && len(data)%2 != 0:
 		return errors.New("uneven number of bytes in dst")
+	case shortSize && startAddress+uint16(len(data))/2 >= 125 || len(data)+int(startAddress) > 2000:
+		return errors.New("write request exceeds model's size")
 	}
-	if startAddress+uint16(len(data))/2 >= 125 {
-		return errors.New("read request exceeds model's size")
+	stride := 1
+	if shortSize {
+		stride = 2
 	}
 	ireg := startAddress
-	for i := 0; i < len(data); i += 2 {
-		dm.HoldingRegisters[ireg] = binary.BigEndian.Uint16(data[i:])
+	for i := 0; i < len(data); i += stride {
+		switch fc {
+		case FCWriteMultipleRegisters, FCWriteSingleRegister:
+			dm.HoldingRegisters[ireg] = binary.BigEndian.Uint16(data[i:])
+		case FCWriteSingleCoil:
+			dm.SetCoil(int(ireg), data[ireg] != 0)
+		}
 		ireg++
+		if fc == FCWriteSingleCoil || fc == FCWriteSingleRegister {
+			break
+		}
 	}
 	return nil
+}
+
+// GetCoil returns 1 if the coil at position i is set and 0 if it is not.
+// Expects a position of equal or under 2000.
+func (sm *BlockedModel) GetCoil(i int) byte {
+	if i > 2000 {
+		panic("coil exceeds limit")
+	}
+	idx, bit := i/16, i%16
+	return b2u8(sm.coils[idx]&(1<<bit) != 0)
+}
+
+func (sm *BlockedModel) SetCoil(i int, value bool) {
+	if i > 2000 {
+		panic("coil exceeds limit")
+	}
+	idx, bit := i/16, i%16
+	if value {
+		sm.coils[idx] |= (1 << bit)
+	} else {
+		sm.coils[idx] &^= (1 << bit)
+	}
+}
+
+// GetDiscreteInput returns 1 if the discrete input at position i is set and 0 if it is not.
+// Expects a position of equal or under 2000.
+func (sm *BlockedModel) GetDiscreteInput(i int) byte {
+	if i > 2000 {
+		panic("discrete input exceeds limit")
+	}
+	idx, bit := i/16, i%16
+	return b2u8(sm.discreteInputs[idx]&(1<<bit) != 0)
+}
+
+func (sm *BlockedModel) SetDiscreteInput(i int, value bool) {
+	if i > 2000 {
+		panic("discrete input exceeds limit")
+	}
+	idx, bit := i/16, i%16
+	if value {
+		sm.discreteInputs[idx] |= (1 << bit)
+	} else {
+		sm.discreteInputs[idx] &^= (1 << bit)
+	}
 }

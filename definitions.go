@@ -9,13 +9,14 @@ const (
 	FCReadHoldingRegisters       FunctionCode = 0x03
 	FCReadInputRegisters         FunctionCode = 0x04
 	FCWriteSingleCoil            FunctionCode = 0x05
-	FCWriteSingleRegister        FunctionCode = 0x06
-	FCWriteMultipleRegisters     FunctionCode = 0x10
+	FCWriteSingleRegister        FunctionCode = 0x06 // Holding register.
+	FCWriteMultipleRegisters     FunctionCode = 0x10 // Holding registers.
 	FCReadFileRecord             FunctionCode = 0x14
 	FCWriteFileRecord            FunctionCode = 0x15
 	FCMaskWriteRegister          FunctionCode = 0x16
 	FCReadWriteMultipleRegisters FunctionCode = 0x17
 	FCReadFIFOQueue              FunctionCode = 0x18
+	FCWriteMultipleCoils         FunctionCode = 0x0F
 )
 
 // Diagnostic function codes.
