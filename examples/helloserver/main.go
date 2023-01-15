@@ -14,9 +14,9 @@ import (
 func main() {
 	var dataBank peamodbus.BlockedModel
 	sv, err := peamodbus.NewServer(peamodbus.ServerConfig{
-		Address:    "localhost:8080",
-		NetTimeout: 5 * time.Second,
-		DataModel:  &dataBank,
+		Address:        "localhost:8080",
+		ConnectTimeout: 5 * time.Second,
+		DataModel:      &dataBank,
 	})
 	if err != nil {
 		log.Fatal(err)

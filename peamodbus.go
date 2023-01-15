@@ -34,12 +34,17 @@ import (
 	"errors"
 )
 
+// DataModel is the core abstraction of the Modbus model.
+// The definition of this interface allows for abstract
+// representations of the Modbus data allowing for
+// low memory representations of registers that are ideal for microcontrollers.
+// An explicit representation of Modbus memory ([BlockedModel]) occupies a kilobyte,
+// This could be reduced to just 2 bytes for a controller that just operates a 16bit sensor.
 type DataModel interface {
 	// Read writes data to dst as per specified by fc, the start address and
-	// the length of dst buffer. Coils and discrete inputs should be represented
-	// as single bytes, either 1 or 0.
-	Read(dst []byte, fc FunctionCode, startAddress uint16) error
-	Write(fc FunctionCode, startAdress uint16, data []byte) error
+	// the length of dst buffer.
+	Read(dst []byte, fc FunctionCode, startAddress, quantity uint16) error
+	Write(fc FunctionCode, startAdress, quantity uint16, data []byte) error
 }
 
 // BlockedModel is a memory constrained DataModel implementation.
@@ -55,63 +60,63 @@ type BlockedModel struct {
 	discreteInputs [125]uint16
 }
 
-func (dm *BlockedModel) Read(dst []byte, fc FunctionCode, startAddress uint16) error {
-	shortSize := fc == FCReadHoldingRegisters || fc == FCReadInputRegisters
+func (dm *BlockedModel) Read(dst []byte, fc FunctionCode, startAddress, quantity uint16) error {
+	bitSize := fc == FCReadCoils || fc == FCReadDiscreteInputs
+	endAddress := startAddress + quantity
 	switch {
-	case !shortSize && fc != FCReadCoils && fc != FCReadDiscreteInputs:
+	case !bitSize && fc != FCReadHoldingRegisters && fc != FCReadInputRegisters:
 		return errors.New("unsupported read action")
-	case shortSize && len(dst)%2 != 0:
+	case !bitSize && len(dst)%2 != 0:
 		return errors.New("uneven number of bytes in dst")
-	case shortSize && startAddress+uint16(len(dst))/2 >= 125 || len(dst)+int(startAddress) > 2000:
+	case endAddress > 2000 || (!bitSize && endAddress >= 125):
 		return errors.New("read request exceeds model's size")
 	}
 
-	ireg := startAddress
-	stride := 1
-	if shortSize {
-		stride = 2
-	}
-	for i := 0; i < len(dst); i += stride {
+	for i := uint16(0); i < quantity; i++ {
+		ireg := startAddress + i
 		switch fc {
 		case FCReadHoldingRegisters:
-			binary.BigEndian.PutUint16(dst[i:], dm.HoldingRegisters[ireg])
+			binary.BigEndian.PutUint16(dst[2*i:], dm.HoldingRegisters[ireg])
 		case FCReadInputRegisters:
-			binary.BigEndian.PutUint16(dst[i:], dm.InputRegisters[ireg])
+			binary.BigEndian.PutUint16(dst[2*i:], dm.InputRegisters[ireg])
 		case FCReadCoils:
-			dst[i] = dm.GetCoil(int(ireg))
+			if dm.GetCoil(int(ireg)) {
+				dst[i/8] |= (1 << (i % 8)) // Set bit.
+			} else {
+				dst[i/8] &^= (1 << (i % 8)) // Unset bit.
+			}
 		case FCReadDiscreteInputs:
-			dst[i] = dm.GetDiscreteInput(int(ireg))
+			if dm.GetDiscreteInput(int(ireg)) {
+				dst[i/8] |= (1 << (i % 8))
+			} else {
+				dst[i/8] &^= (1 << (i % 8))
+			}
 		}
 		ireg++
 	}
 	return nil
 }
 
-func (dm *BlockedModel) Write(fc FunctionCode, startAddress uint16, data []byte) error {
-	shortSize := fc == FCWriteMultipleRegisters
+func (dm *BlockedModel) Write(fc FunctionCode, startAddress, quantity uint16, data []byte) error {
+	bitSize := fc == FCWriteSingleCoil || fc == FCWriteMultipleCoils
+	endAddress := startAddress + quantity
 	switch {
-	case !shortSize && fc != FCWriteSingleCoil:
+	case !bitSize && fc != FCWriteSingleRegister && fc != FCWriteMultipleRegisters:
 		return errors.New("unsupported write action")
-	case shortSize && len(data)%2 != 0:
-		return errors.New("uneven number of bytes in dst")
-	case shortSize && startAddress+uint16(len(data))/2 >= 125 || len(data)+int(startAddress) > 2000:
+	case endAddress > 2000 || (!bitSize && endAddress >= 125):
 		return errors.New("write request exceeds model's size")
+	case quantity != 1 && (fc == FCWriteSingleCoil || fc == FCWriteSingleRegister):
+		return errors.New("quantity must be 1 for reading single coil or single register")
 	}
-	stride := 1
-	if shortSize {
-		stride = 2
-	}
-	ireg := startAddress
-	for i := 0; i < len(data); i += stride {
+
+	for i := uint16(0); i < quantity; i++ {
+		ireg := i + startAddress
 		switch fc {
 		case FCWriteMultipleRegisters, FCWriteSingleRegister:
-			dm.HoldingRegisters[ireg] = binary.BigEndian.Uint16(data[i:])
-		case FCWriteSingleCoil:
-			dm.SetCoil(int(ireg), data[ireg] != 0)
-		}
-		ireg++
-		if fc == FCWriteSingleCoil || fc == FCWriteSingleRegister {
-			break
+			dm.HoldingRegisters[ireg] = binary.BigEndian.Uint16(data[i*2:])
+		case FCWriteSingleCoil, FCWriteMultipleCoils:
+			bit := data[i/8] & (1 << (i % 8))
+			dm.SetCoil(int(ireg), bit != 0)
 		}
 	}
 	return nil
@@ -119,12 +124,12 @@ func (dm *BlockedModel) Write(fc FunctionCode, startAddress uint16, data []byte)
 
 // GetCoil returns 1 if the coil at position i is set and 0 if it is not.
 // Expects a position of equal or under 2000.
-func (sm *BlockedModel) GetCoil(i int) byte {
+func (sm *BlockedModel) GetCoil(i int) bool {
 	if i > 2000 {
 		panic("coil exceeds limit")
 	}
 	idx, bit := i/16, i%16
-	return b2u8(sm.coils[idx]&(1<<bit) != 0)
+	return sm.coils[idx]&(1<<bit) != 0
 }
 
 func (sm *BlockedModel) SetCoil(i int, value bool) {
@@ -141,12 +146,12 @@ func (sm *BlockedModel) SetCoil(i int, value bool) {
 
 // GetDiscreteInput returns 1 if the discrete input at position i is set and 0 if it is not.
 // Expects a position of equal or under 2000.
-func (sm *BlockedModel) GetDiscreteInput(i int) byte {
+func (sm *BlockedModel) GetDiscreteInput(i int) bool {
 	if i > 2000 {
 		panic("discrete input exceeds limit")
 	}
 	idx, bit := i/16, i%16
-	return b2u8(sm.discreteInputs[idx]&(1<<bit) != 0)
+	return sm.discreteInputs[idx]&(1<<bit) != 0
 }
 
 func (sm *BlockedModel) SetDiscreteInput(i int, value bool) {

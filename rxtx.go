@@ -67,6 +67,9 @@ func (rx *Rx) ReadNext() (int, error) {
 		for err == nil {
 			_, err = lr.Read(discard[:])
 		}
+		if lr.N == 0 && errors.Is(err, io.EOF) {
+			err = nil
+		}
 	}
 	fc := FunctionCode(buf[0])
 	switch fc {
@@ -91,7 +94,7 @@ func (rx *Rx) ReadNext() (int, error) {
 			consume()
 		}
 	}
-	if err == nil && lr.N != 0 {
+	if lr.N != 0 && err == nil {
 		err = errors.New("callback did not consume all bytes in frame")
 	}
 	if err != nil {
@@ -110,11 +113,20 @@ func (rx *Rx) handleErr(err error) {
 	rx.trp.Close()
 }
 
+const txBufLen = 256
+
 // Tx handles the marshalling of frames over a underlying transport.
 type Tx struct {
 	trp         io.WriteCloser
 	TxCallbacks TxCallbacks
-	buf         [256]byte
+	buf         [txBufLen]byte
+}
+
+// TxCallbacks stores functions to be called on events during marshalling of websocket frames.
+type TxCallbacks struct {
+	// OnError is called when
+	OnError func(tx *Tx, err error)
+	// OnDataAccess func(tx *Tx, fc FunctionCode, startAddr uint16, dst []byte) error
 }
 
 // NewTxBuffered creates a new TxBuffered ready for use.
@@ -125,13 +137,6 @@ func NewTxBuffered(wc io.WriteCloser) *Tx {
 // SetTxTransport sets the underlying TxBuffered transport writer.
 func (tx *Tx) SetTxTransport(wc io.WriteCloser) {
 	tx.trp = wc
-}
-
-// TxCallbacks stores functions to be called on events during marshalling of websocket frames.
-type TxCallbacks struct {
-	// OnError is called when
-	OnError func(tx *Tx, err error)
-	// OnDataAccess func(tx *Tx, fc FunctionCode, startAddr uint16, dst []byte) error
 }
 
 func (tx *Tx) handleErr(err error) {
@@ -150,6 +155,15 @@ func (tx *Tx) RequestReadHoldingRegisters(mbap ApplicationHeader, startAddr, num
 	return tx.writeSimple(mbap, FCReadHoldingRegisters, buf[:4])
 }
 
+func (tx *Tx) ResponseReadInputRegisters(mbap ApplicationHeader, registerData []byte) (int, error) {
+	if len(registerData)%2 != 0 || len(registerData) > 255 {
+		return 0, errors.New("register data length must be multiple of 2 and less than 255 in length")
+	}
+	ln := byte(len(registerData))
+	mbap.Length = 3 + uint16(ln)
+	return tx.writeSimpleU8(mbap, FCReadInputRegisters, ln, registerData)
+}
+
 func (tx *Tx) ResponseReadHoldingRegisters(mbap ApplicationHeader, registerData []byte) (int, error) {
 	if len(registerData)%2 != 0 || len(registerData) > 255 {
 		return 0, errors.New("register data length must be multiple of 2 and less than 255 in length")
@@ -159,43 +173,82 @@ func (tx *Tx) ResponseReadHoldingRegisters(mbap ApplicationHeader, registerData 
 	return tx.writeSimpleU8(mbap, FCReadHoldingRegisters, ln, registerData)
 }
 
-var errResponseTooLarge = errors.New("response data too large, this may be a bug with peamodbus. file an issue")
+func (tx *Tx) ResponseWriteSingleRegister(mbap ApplicationHeader, address, writtenValue uint16) (int, error) {
+	return tx.writeSimple2U16(mbap, FCWriteSingleCoil, address, writtenValue, nil)
+}
 
-const maxWriteBuf = 256
+func (tx *Tx) ResponseWriteSingleCoil(mbap ApplicationHeader, address uint16, writtenValue bool) (int, error) {
+	var outputValue uint16
+	if writtenValue {
+		outputValue = 0xff00
+	}
+	return tx.writeSimple2U16(mbap, FCWriteSingleCoil, address, outputValue, nil)
+}
+
+func (tx *Tx) ResponseReadCoils(mbap ApplicationHeader, registerData []byte) (int, error) {
+	if len(registerData) > 255 {
+		return 0, errors.New("register data length must be less than 255 in length")
+	}
+	ln := byte(len(registerData))
+	return tx.writeSimpleU8(mbap, FCReadCoils, ln, registerData)
+}
+
+func (tx *Tx) ResponseReadDiscreteInput(mbap ApplicationHeader, registerData []byte) (int, error) {
+	if len(registerData) > 255 {
+		return 0, errors.New("register data length must be less than 255 in length")
+	}
+	ln := byte(len(registerData))
+	return tx.writeSimpleU8(mbap, FCReadDiscreteInputs, ln, registerData)
+}
+
+var errResponseTooLargeTx = errors.New("response data too large for tx buffer")
 
 func (tx *Tx) writeSimple(mbap ApplicationHeader, fc FunctionCode, responseData []byte) (int, error) {
-	if len(responseData) > maxWriteBuf-8 {
-		return 0, errResponseTooLarge
+	if len(responseData) > txBufLen-8 {
+		return 0, errResponseTooLargeTx
 	}
-	var buf [maxWriteBuf]byte
-	mbap.Put(buf[:])
-	buf[7] = byte(fc)
-	n := copy(buf[8:], responseData)
-	return writeFull(tx.trp, buf[:8+n])
+	mbap.Length = 2 + uint16(len(responseData))
+	mbap.Put(tx.buf[:])
+	tx.buf[7] = byte(fc)
+	n := copy(tx.buf[8:], responseData)
+	return writeFull(tx.trp, tx.buf[:8+n])
 }
 
 func (tx *Tx) writeSimpleU8(mbap ApplicationHeader, fc FunctionCode, v1 uint8, responseData []byte) (int, error) {
-	if len(responseData) > maxWriteBuf-9 {
-		return 0, errResponseTooLarge
+	if len(responseData) > txBufLen-9 {
+		return 0, errResponseTooLargeTx
 	}
-	var buf [maxWriteBuf]byte
-	mbap.Put(buf[:])
-	buf[7] = byte(fc)
-	buf[8] = v1
-	n := copy(buf[9:], responseData)
-	return writeFull(tx.trp, buf[:9+n])
+	mbap.Length = 3 + uint16(len(responseData))
+	mbap.Put(tx.buf[:])
+	tx.buf[7] = byte(fc)
+	tx.buf[8] = v1
+	n := copy(tx.buf[9:], responseData)
+	return writeFull(tx.trp, tx.buf[:9+n])
 }
 
 func (tx *Tx) writeSimpleU16(mbap ApplicationHeader, fc FunctionCode, v1 uint16, responseData []byte) (int, error) {
-	if len(responseData) > maxWriteBuf-10 {
-		return 0, errResponseTooLarge
+	if len(responseData) > txBufLen-10 {
+		return 0, errResponseTooLargeTx
 	}
-	var buf [maxWriteBuf]byte
-	mbap.Put(buf[:])
-	buf[7] = byte(fc)
-	binary.BigEndian.PutUint16(buf[8:10], v1)
-	n := copy(buf[10:], responseData)
-	return writeFull(tx.trp, buf[:10+n])
+	mbap.Length = 4 + uint16(len(responseData))
+	mbap.Put(tx.buf[:])
+	tx.buf[7] = byte(fc)
+	binary.BigEndian.PutUint16(tx.buf[8:10], v1)
+	n := copy(tx.buf[10:], responseData)
+	return writeFull(tx.trp, tx.buf[:10+n])
+}
+
+func (tx *Tx) writeSimple2U16(mbap ApplicationHeader, fc FunctionCode, v1, v2 uint16, responseData []byte) (int, error) {
+	if len(responseData) > txBufLen-12 {
+		return 0, errResponseTooLargeTx
+	}
+	mbap.Length = 6 + uint16(len(responseData))
+	mbap.Put(tx.buf[:])
+	tx.buf[7] = byte(fc)
+	binary.BigEndian.PutUint16(tx.buf[8:10], v1)
+	binary.BigEndian.PutUint16(tx.buf[10:12], v2)
+	n := copy(tx.buf[12:], responseData)
+	return writeFull(tx.trp, tx.buf[:12+n])
 }
 
 // ApplicationHeader is a compact representation of the MBAP header as described

@@ -20,37 +20,36 @@ const (
 
 // Server is a Modbus TCP Server implementation. A Server listens on a network
 // and awaits a client's request. Servers are typically sensors or actuators in an industrial setting.
+// Server's methods are not all safe for concurrent use.
 type Server struct {
-	state serverState
-
-	keepalive  time.Duration
+	state      serverState
 	tcpTimeout time.Duration
 	rx         Rx
 	tx         Tx
 	address    net.TCPAddr
 }
 
+// ServerConfig provides configuration parameters to NewServer.
 type ServerConfig struct {
-	// Formatted as IP with port. i.e: "192.168.1.35:502"
-	// By default client uses port 502.
+	// Formatted numeric IP with port. i.e: "192.168.1.35:502"
 	Address string
 	// It is recommended to enable KeepAlive on both client and server connections
 	// in order to poll whether either has crashed. By default is set to 2 hours
 	// as specified by the Modbus TCP/IP Implementation Guidelines.
 	// KeepAlive time.Duration
 
-	// Timeout is the maximum amount of time a dial will wait for a connect to complete. If Deadline is also set, it may fail earlier.
-	NetTimeout time.Duration
+	// ConnectTimeout is the maximum amount of time a call to Accept will wait for a connect to complete.
+	ConnectTimeout time.Duration
+
 	// DataModel defines the data bank used for data access operations
 	// such as read/write operations with coils, discrete inputs, holding registers etc.
 	// If nil a default data model will be chosen.
 	DataModel DataModel
 }
 
+// NewServer returns a Server ready for use.
+// `localhost` in a server address is replaced with `127.0.0.1`
 func NewServer(cfg ServerConfig) (*Server, error) {
-	// if cfg.KeepAlive == 0 {
-	// 	cfg.KeepAlive = defaultKeepalive
-	// }
 	if cfg.DataModel == nil {
 		cfg.DataModel = &BlockedModel{}
 	}
@@ -62,7 +61,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 
 	sv := &Server{
 		state:      serverState{closeErr: net.ErrClosed, data: cfg.DataModel},
-		tcpTimeout: cfg.NetTimeout,
+		tcpTimeout: cfg.ConnectTimeout,
 		// keepalive:  cfg.KeepAlive,
 		address: *net.TCPAddrFromAddrPort(address),
 	}
@@ -70,6 +69,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	return sv, nil
 }
 
+// Accept begins listening on the server's TCP address. If the server already
+// has a connection this method returns an error. By design Servers can only maintain one connection.
+// File an issue if this does not cover your use case.
 func (sv *Server) Accept(ctx context.Context) error {
 	if sv.state.IsConnected() {
 		return errors.New("already connected or incorrectly initialized client/server")
@@ -96,6 +98,8 @@ func (sv *Server) Accept(ctx context.Context) error {
 	return nil
 }
 
+// HandleNext reads the next message on the network and handles it automatically.
+// This call is blocking.
 func (sv *Server) HandleNext() error {
 	_, err := sv.rx.ReadNext()
 	if err != nil {
@@ -104,14 +108,18 @@ func (sv *Server) HandleNext() error {
 	return sv.state.HandlePendingRequests(&sv.tx)
 }
 
+// Err returns the error that caused disconnection. Is safe for concurrent use.
 func (sv *Server) Err() error {
 	return sv.state.Err()
 }
 
+// IsConnected returns true if the server has an active connection. Is safe for concurrent use.
 func (sv *Server) IsConnected() bool {
 	return sv.state.IsConnected()
 }
 
+// Addr returns the address of the last active connection. If the server has not
+// yet initialized a connection it returns an empty *net.TCPAddr.
 func (sv *Server) Addr() net.Addr {
 	sv.state.mu.Lock()
 	defer sv.state.mu.Unlock()
@@ -178,27 +186,67 @@ func (cs *serverState) NewPendingRequest(r request) {
 }
 
 func (cs *serverState) HandlePendingRequests(tx *Tx) (err error) {
+	var buffer [256]byte
 	cs.mu.Lock()
 	i := len(cs.pendingRequests) - 1
 	defer func() {
-		cs.pendingRequests = cs.pendingRequests[:i]
+		cs.pendingRequests = cs.pendingRequests[:i] // Remove handled requests from list.
 		cs.mu.Unlock()
 	}()
 	for ; i >= 0; i-- {
 		req := cs.pendingRequests[i]
+		mbap := ApplicationHeader{Transaction: req.transaction, Protocol: 0, Unit: req.unit}
 		switch req.fc {
-		case FCReadHoldingRegisters:
-			mbap := ApplicationHeader{Transaction: req.transaction, Protocol: 0, Unit: req.unit}
-			quantityBytes := req.reqVal2 * 2
-			err = cs.data.Read(tx.buf[:quantityBytes], req.fc, req.reqVal1)
-			if err != nil {
-				err = fmt.Errorf("handling fc=0x%#X accessing data model: %w", req.fc, err)
+
+		case FCReadHoldingRegisters, FCReadCoils, FCReadDiscreteInputs, FCReadInputRegisters:
+			// These are client requests. We respond state of coils or registers.
+			shortSize := req.fc == FCReadHoldingRegisters || req.fc == FCReadInputRegisters
+			quantityBytes := req.reqVal2
+			if quantityBytes > uint16(len(buffer)) {
+				err = fmt.Errorf("short buffer in HandlePendingRequests")
 				break
 			}
-			// tx.TxCallbacks.OnDataAccess(tx, req.fc, req.reqVal1, tx.buf[:quantityBytes])
-			_, err = tx.ResponseReadHoldingRegisters(mbap, tx.buf[:quantityBytes])
+			address := req.reqVal1
+			if shortSize {
+				quantityBytes *= 2
+			}
+
+			err = cs.data.Read(buffer[:quantityBytes], req.fc, address, req.reqVal2)
+			if err != nil {
+				err = fmt.Errorf("handling fc=%#X accessing data model: %w", req.fc, err)
+				break
+			}
+			if req.fc == FCReadHoldingRegisters {
+				_, err = tx.ResponseReadHoldingRegisters(mbap, buffer[:quantityBytes])
+			} else if req.fc == FCReadCoils {
+				_, err = tx.ResponseReadCoils(mbap, buffer[:quantityBytes])
+			} else if req.fc == FCReadInputRegisters {
+				_, err = tx.ResponseReadInputRegisters(mbap, buffer[:quantityBytes])
+			} else if req.fc == FCReadDiscreteInputs {
+				_, err = tx.ResponseReadDiscreteInput(mbap, buffer[:quantityBytes])
+			} else {
+				panic("unhandled case") // unreachable.
+			}
+
+		case FCWriteSingleRegister, FCWriteSingleCoil:
+			address := req.reqVal1
+			value := req.reqVal2
+			binary.BigEndian.PutUint16(buffer[:2], value)
+			err = cs.data.Write(req.fc, address, 1, buffer[:2])
+			if err != nil {
+				err = fmt.Errorf("handling fc=%#X accessing data model: %w", req.fc, err)
+				break
+			}
+			if req.fc == FCWriteSingleCoil {
+				_, err = tx.ResponseWriteSingleCoil(mbap, address, value == 0xff00)
+			} else if req.fc == FCWriteSingleRegister {
+				_, err = tx.ResponseWriteSingleRegister(mbap, address, value)
+			} else {
+				panic("unhandled case") // unreachable.
+			}
+
 		default:
-			err = fmt.Errorf("unhandled request function code 0x%#X (%d)", req.fc, req.fc)
+			err = fmt.Errorf("unhandled request function code %#X (%d)", req.fc, req.fc)
 		}
 	}
 	if i < 0 {
@@ -238,12 +286,12 @@ func (cs *serverState) dataRequestHandler(rx *Rx, fc FunctionCode, r io.Reader) 
 
 	// Simplest Modbus request case consisting of a address and a quantity
 	case FCReadHoldingRegisters, FCReadInputRegisters, FCReadCoils, FCReadDiscreteInputs,
-		FCWriteSingleCoil, FCWriteSingleRegister, FCWriteMultipleRegisters:
+		FCWriteSingleCoil, FCWriteSingleRegister:
 		n, err = io.ReadAtLeast(r, buf[:], 4)
 		if err != nil {
 			break
 		} else if n != 4 {
-			err = fmt.Errorf("expected 4 bytes of ReadHolding data, got %d", len(buf))
+			err = fmt.Errorf("expected 4 bytes data, got %d", n)
 			break
 		}
 		startAddress := binary.BigEndian.Uint16(buf[:2])
@@ -256,6 +304,20 @@ func (cs *serverState) dataRequestHandler(rx *Rx, fc FunctionCode, r io.Reader) 
 			reqVal2:     quantity,
 		})
 
+	case FCWriteMultipleCoils, FCWriteMultipleRegisters:
+		// We must handle multiple writes in request handler to avoid allocating memory.
+		_, err = io.ReadFull(r, buf[:5])
+		if err != nil {
+			break
+		}
+		startAddress := binary.BigEndian.Uint16(buf[:2])
+		quantity := binary.BigEndian.Uint16(buf[2:4])
+		byteCount := buf[4]
+		_, err = io.ReadAtLeast(r, buf[:], int(byteCount))
+		if err != nil {
+			break
+		}
+		cs.data.Write(fc, startAddress, quantity, buf[:byteCount])
 	default:
 		fmt.Println("unhandled function code", fc)
 	}
