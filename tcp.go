@@ -37,7 +37,8 @@ type ServerConfig struct {
 	// It is recommended to enable KeepAlive on both client and server connections
 	// in order to poll whether either has crashed. By default is set to 2 hours
 	// as specified by the Modbus TCP/IP Implementation Guidelines.
-	KeepAlive time.Duration
+	// KeepAlive time.Duration
+
 	// Timeout is the maximum amount of time a dial will wait for a connect to complete. If Deadline is also set, it may fail earlier.
 	NetTimeout time.Duration
 	// DataModel defines the data bank used for data access operations
@@ -47,9 +48,9 @@ type ServerConfig struct {
 }
 
 func NewServer(cfg ServerConfig) (*Server, error) {
-	if cfg.KeepAlive == 0 {
-		cfg.KeepAlive = defaultKeepalive
-	}
+	// if cfg.KeepAlive == 0 {
+	// 	cfg.KeepAlive = defaultKeepalive
+	// }
 	if cfg.DataModel == nil {
 		cfg.DataModel = &StaticModel{}
 	}
@@ -62,8 +63,8 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	sv := &Server{
 		state:      serverState{closeErr: net.ErrClosed, data: cfg.DataModel},
 		tcpTimeout: cfg.NetTimeout,
-		keepalive:  cfg.KeepAlive,
-		address:    *net.TCPAddrFromAddrPort(address),
+		// keepalive:  cfg.KeepAlive,
+		address: *net.TCPAddrFromAddrPort(address),
 	}
 	sv.rx.RxCallbacks, sv.tx.TxCallbacks = sv.state.callbacks()
 	return sv, nil
@@ -77,11 +78,16 @@ func (sv *Server) Accept(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if sv.tcpTimeout > 0 {
+		listener.SetDeadline(time.Now().Add(sv.tcpTimeout))
+	}
 	conn, err := listener.AcceptTCP()
 	if err != nil {
+		listener.Close()
 		return err
 	}
 	sv.state.mu.Lock()
+	listener.SetDeadline(time.Time{})
 	sv.state.closeErr = nil
 	sv.state.listener = listener
 	sv.state.mu.Unlock()
