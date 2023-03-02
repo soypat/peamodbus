@@ -125,7 +125,7 @@ func (dm *BlockedModel) Write(fc FunctionCode, startAddress, quantity uint16, da
 // GetCoil returns 1 if the coil at position i is set and 0 if it is not.
 // Expects a position of equal or under 2000.
 func (sm *BlockedModel) GetCoil(i int) bool {
-	if i > 2000 {
+	if i >= 2000 {
 		panic("coil exceeds limit")
 	}
 	idx, bit := i/16, i%16
@@ -133,7 +133,7 @@ func (sm *BlockedModel) GetCoil(i int) bool {
 }
 
 func (sm *BlockedModel) SetCoil(i int, value bool) {
-	if i > 2000 {
+	if i >= 2000 {
 		panic("coil exceeds limit")
 	}
 	idx, bit := i/16, i%16
@@ -147,7 +147,7 @@ func (sm *BlockedModel) SetCoil(i int, value bool) {
 // GetDiscreteInput returns 1 if the discrete input at position i is set and 0 if it is not.
 // Expects a position of equal or under 2000.
 func (sm *BlockedModel) GetDiscreteInput(i int) bool {
-	if i > 2000 {
+	if i >= 2000 {
 		panic("discrete input exceeds limit")
 	}
 	idx, bit := i/16, i%16
@@ -155,7 +155,7 @@ func (sm *BlockedModel) GetDiscreteInput(i int) bool {
 }
 
 func (sm *BlockedModel) SetDiscreteInput(i int, value bool) {
-	if i > 2000 {
+	if i >= 2000 {
 		panic("discrete input exceeds limit")
 	}
 	idx, bit := i/16, i%16
