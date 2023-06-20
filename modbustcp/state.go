@@ -16,7 +16,7 @@ type serverState struct {
 	lastMBAP applicationHeader
 	listener *net.TCPListener
 	conn     net.Conn
-	data     peamodbus.DataModel
+	data     peamodbus.ObjectModel
 	closeErr error
 	//
 	pendingRequests []request

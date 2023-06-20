@@ -61,7 +61,7 @@ func (req Request) String() string {
 }
 
 // Response generates a response packet for the request.
-func (req *Request) Response(tx *Tx, model DataModel, dst, scratch []byte) (packet int, err error) {
+func (req *Request) Response(tx *Tx, model ObjectModel, dst, scratch []byte) (packet int, err error) {
 	fc := req.FC
 	isRead := fc.IsRead()
 	shortSize := fc == FCReadHoldingRegisters || fc == FCReadInputRegisters
@@ -75,9 +75,9 @@ func (req *Request) Response(tx *Tx, model DataModel, dst, scratch []byte) (pack
 	address := req.maybeAddr
 	if fc == FCWriteSingleRegister || fc == FCWriteSingleCoil {
 		binary.BigEndian.PutUint16(scratch[:2], quantityBytes)
-		err = model.Write(fc, address, 1, scratch[:2])
+		err = WriteToModel(model, fc, address, 1, scratch[:2])
 	} else {
-		err = model.Read(scratch[:quantityBytes], fc, address, req.maybeValueQuantity)
+		err = ReadFromModel(scratch[:quantityBytes], model, fc, address, req.maybeValueQuantity)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("handling fc=%q accessing data model: %w", fc, err)

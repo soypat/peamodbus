@@ -8,6 +8,8 @@ import (
 	"github.com/soypat/peamodbus"
 )
 
+var ErrBadCRC = errors.New("bad CRC")
+
 type Server struct {
 	rx      peamodbus.Rx
 	tx      peamodbus.Tx
@@ -23,7 +25,7 @@ type ServerConfig struct {
 	// DataModel defines the data bank used for data access operations
 	// such as read/write operations with coils, discrete inputs, holding registers etc.
 	// If nil a default data model will be chosen.
-	DataModel peamodbus.DataModel
+	DataModel peamodbus.ObjectModel
 }
 
 func NewServer(port io.ReadWriter, cfg ServerConfig) *Server {
@@ -92,6 +94,7 @@ func (sv *Server) tryRx() (packet []byte, address uint8, err error) {
 	} else if n == 0 && sv.state.dataEnd == sv.state.dataStart {
 		return nil, 0, peamodbus.ErrMissingPacketData // No data read.
 	}
+
 	var plen uint16
 	// Remove RTU/Serial address byte.
 	address = buf[sv.state.dataStart]
@@ -111,4 +114,29 @@ func (sv *Server) tryRx() (packet []byte, address uint8, err error) {
 	}
 	sv.state.dataStart = packetEnd
 	return buf[packetStart:packetEnd], address, nil
+}
+
+func generateCRC(b []byte) (crc uint16) {
+	const (
+		startCRC = 0xFFFF
+		xorCRC   = 0xA001
+	)
+	crc = startCRC
+	for i := 0; i < len(b); i++ {
+		crc ^= uint16(b[i])
+		for n := 0; n < 8; n++ {
+			crc >>= 1
+			if crc&1 != 0 {
+				crc ^= xorCRC
+			}
+		}
+	}
+	return crc
+}
+
+func generateLRC(b []byte) (lrc uint8) {
+	for i := 0; i < len(b); i++ {
+		lrc += b[i]
+	}
+	return uint8(-int8(lrc)) // This is how you take two's complement in Go.
 }

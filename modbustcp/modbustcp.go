@@ -45,7 +45,7 @@ type ServerConfig struct {
 	// DataModel defines the data bank used for data access operations
 	// such as read/write operations with coils, discrete inputs, holding registers etc.
 	// If nil a default data model will be chosen.
-	DataModel peamodbus.DataModel
+	DataModel peamodbus.ObjectModel
 }
 
 // NewServer returns a Server ready for use.

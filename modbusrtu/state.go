@@ -1,6 +1,7 @@
 package modbusrtu
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"sync"
@@ -13,10 +14,11 @@ import (
 // Since this state is shared between frames it is protected by a mutex so that
 // the Client implementation is concurrent-safe.
 type serverState struct {
-	mu       sync.Mutex
-	data     peamodbus.DataModel
-	closeErr error
-	port     io.ReadWriter
+	mu         sync.Mutex
+	data       peamodbus.ObjectModel
+	closeErr   error
+	port       io.ReadWriter
+	targetAddr uint8
 	// pendingRequest is the request that is currently being processed.
 	// While set the server will wait for reply.
 
@@ -61,15 +63,21 @@ func (cs *serverState) NewPendingRequest(r peamodbus.Request) {
 }
 
 func (cs *serverState) HandlePendingRequests(tx *peamodbus.Tx) (err error) {
-	const mbapsize = 1
+	const mbapsize = 1 + 2 // | address(uint8) | data... |  crc(uint16) |
 	var scratch, txBuf [256 + mbapsize]byte
 	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	txBuf[0] = cs.targetAddr
 	req := cs.pendingRequest
-	plen, err := req.Response(tx, cs.data, txBuf[mbapsize:], scratch[:])
+	plen, err := req.Response(tx, cs.data, txBuf[1:], scratch[:])
 	if err != nil {
 		return err
 	}
-	_, err = cs.port.Write(txBuf[:plen+mbapsize])
+
+	endOfData := 1 + plen
+	crc := generateCRC(txBuf[0:endOfData])
+	binary.LittleEndian.PutUint16(txBuf[endOfData:], crc)
+	_, err = cs.port.Write(txBuf[:endOfData+2])
 	return err
 }
 

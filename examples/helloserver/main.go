@@ -37,8 +37,9 @@ func main() {
 			log.Println("error in HandleNext", err)
 			time.Sleep(time.Second)
 		} else {
-			for i := range dataBank.HoldingRegisters {
-				dataBank.HoldingRegisters[i]++
+			for i := 0; i < 125; i++ {
+				value := dataBank.GetHoldingRegister(i)
+				dataBank.SetHoldingRegister(i, value+1)
 			}
 		}
 		if err := sv.Err(); err != nil {
