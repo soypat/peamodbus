@@ -51,13 +51,13 @@ type DataModel interface {
 // Each data type (coil, registers) occupies its own block/segment of memory.
 // A non-nil BlockedModel is ready for use after being declared.
 type BlockedModel struct {
-	HoldingRegisters [125]uint16
-	InputRegisters   [125]uint16
 	// There are 2000 coils which can be ON (1) or OFF (0).
 	// We can then represent them as 2000/16=125 16 bit integers.
 	coils [125]uint16
 	// 2000 Discrete inputs, similar to coils.
-	discreteInputs [125]uint16
+	discreteInputs   [125]uint16
+	InputRegisters   [125]uint16
+	HoldingRegisters [125]uint16
 }
 
 func (dm *BlockedModel) Read(dst []byte, fc FunctionCode, startAddress, quantity uint16) error {

@@ -42,3 +42,49 @@ func (fc FunctionCode) IsRead() bool {
 		fc == FCReadHoldingRegisters || fc == FCReadInputRegisters ||
 		fc == FCReadFIFOQueue || fc == FCReadFileRecord
 }
+
+func (fc FunctionCode) String() (s string) {
+	switch fc {
+	case FCReadCoils:
+		s = "read coils"
+	case FCReadDiscreteInputs:
+		s = "read discrete inputs"
+	case FCReadHoldingRegisters:
+		s = "read holding registers"
+	case FCReadInputRegisters:
+		s = "read input registers"
+	case FCWriteSingleCoil:
+		s = "write single coil"
+	case FCWriteSingleRegister:
+		s = "write single register"
+	case FCWriteMultipleRegisters:
+		s = "write multiple registers"
+	case FCReadFileRecord:
+		s = "read file record"
+	case FCWriteFileRecord:
+		s = "write file record"
+	case FCMaskWriteRegister:
+		s = "mask write register"
+	case FCReadWriteMultipleRegisters:
+		s = "read/write multiple registers"
+	case FCReadFIFOQueue:
+		s = "read FIFO queue"
+	case FCWriteMultipleCoils:
+		s = "write multiple coils"
+	case FCReadExceptionStatus:
+		s = "read exception status"
+	case FCDiagnostic:
+		s = "diagnostic"
+	case FCGetComEventCounter:
+		s = "get com event counter"
+	case FCGetComEventLog:
+		s = "get com event log"
+	case FCReportServerID:
+		s = "report server ID"
+	case FCReadDeviceIdentification:
+		s = "read device identification"
+	default:
+		s = "unknown function code"
+	}
+	return s
+}

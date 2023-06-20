@@ -1,4 +1,4 @@
-package peamodbus
+package modbustcp
 
 import (
 	"context"
@@ -11,10 +11,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/soypat/peamodbus"
 )
 
 const (
-	defaultKeepalive = 2 * time.Hour
+	defaultKeepalive = 2*time.Hour - time.Minute
 	defaultPort      = ":502"
 )
 
@@ -24,8 +26,8 @@ const (
 type Server struct {
 	state      serverState
 	tcpTimeout time.Duration
-	rx         Rx
-	tx         Tx
+	rx         peamodbus.Rx
+	tx         peamodbus.Tx
 	address    net.TCPAddr
 }
 
@@ -44,14 +46,14 @@ type ServerConfig struct {
 	// DataModel defines the data bank used for data access operations
 	// such as read/write operations with coils, discrete inputs, holding registers etc.
 	// If nil a default data model will be chosen.
-	DataModel DataModel
+	DataModel peamodbus.DataModel
 }
 
 // NewServer returns a Server ready for use.
 // `localhost` in a server address is replaced with `127.0.0.1`
 func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.DataModel == nil {
-		cfg.DataModel = &BlockedModel{}
+		cfg.DataModel = &peamodbus.BlockedModel{}
 	}
 	cfg.Address = strings.Replace(cfg.Address, "localhost", "127.0.0.1", 1)
 	address, err := netip.ParseAddrPort(cfg.Address)
@@ -92,16 +94,24 @@ func (sv *Server) Accept(ctx context.Context) error {
 	listener.SetDeadline(time.Time{})
 	sv.state.closeErr = nil
 	sv.state.listener = listener
+	sv.state.conn = conn
 	sv.state.mu.Unlock()
-	sv.rx.SetRxTransport(conn)
-	sv.tx.SetTxTransport(conn)
 	return nil
 }
 
 // HandleNext reads the next message on the network and handles it automatically.
 // This call is blocking.
 func (sv *Server) HandleNext() error {
-	_, err := sv.rx.ReadNext()
+	mbap, n, err := DecodeMBAP(sv.state.conn)
+	if err != nil {
+		if n != 0 {
+			sv.state.CloseConn(err)
+		}
+		return err
+	}
+	var buf [256]byte
+	remaining := mbap.Length - 1
+	err = sv.rx.Receive(buf[:remaining])
 	if err != nil {
 		return err
 	}
@@ -135,7 +145,8 @@ func (sv *Server) Addr() net.Addr {
 type serverState struct {
 	mu       sync.Mutex
 	listener *net.TCPListener
-	data     DataModel
+	conn     net.Conn
+	data     peamodbus.DataModel
 	closeErr error
 	//
 	pendingRequests []request
@@ -171,11 +182,7 @@ type request struct {
 	// MBAP data includes transaction number and unit.
 	transaction uint16
 	unit        uint8
-	fc          FunctionCode
-	// First value usually contains Modbus address value.
-	reqVal1 uint16
-	// Second value usually contains Modbus quantity of addresses to read.
-	reqVal2 uint16
+	req         peamodbus.Request
 }
 
 // NewPendingRequest adds a request to the LIFO queue.
@@ -185,8 +192,9 @@ func (cs *serverState) NewPendingRequest(r request) {
 	cs.mu.Unlock()
 }
 
-func (cs *serverState) HandlePendingRequests(tx *Tx) (err error) {
-	var buffer [256]byte
+func (cs *serverState) HandlePendingRequests(tx *peamodbus.Tx) (err error) {
+	const mbapsize = 7
+	var scratch, txBuf [256 + mbapsize]byte
 	cs.mu.Lock()
 	i := len(cs.pendingRequests) - 1
 	defer func() {
@@ -195,131 +203,114 @@ func (cs *serverState) HandlePendingRequests(tx *Tx) (err error) {
 	}()
 	for ; i >= 0; i-- {
 		req := cs.pendingRequests[i]
+		plen, err := req.req.Response(tx, cs.data, txBuf[mbapsize:], scratch[:])
+		if err != nil {
+			break
+		}
 		mbap := ApplicationHeader{Transaction: req.transaction, Protocol: 0, Unit: req.unit}
-		switch req.fc {
-
-		case FCReadHoldingRegisters, FCReadCoils, FCReadDiscreteInputs, FCReadInputRegisters:
-			// These are client requests. We respond state of coils or registers.
-			shortSize := req.fc == FCReadHoldingRegisters || req.fc == FCReadInputRegisters
-			quantityBytes := req.reqVal2
-			if quantityBytes > uint16(len(buffer)) {
-				err = fmt.Errorf("short buffer in HandlePendingRequests")
-				break
-			}
-			address := req.reqVal1
-			if shortSize {
-				quantityBytes *= 2
-			}
-
-			err = cs.data.Read(buffer[:quantityBytes], req.fc, address, req.reqVal2)
-			if err != nil {
-				err = fmt.Errorf("handling fc=%#X accessing data model: %w", req.fc, err)
-				break
-			}
-			if req.fc == FCReadHoldingRegisters {
-				_, err = tx.ResponseReadHoldingRegisters(mbap, buffer[:quantityBytes])
-			} else if req.fc == FCReadCoils {
-				_, err = tx.ResponseReadCoils(mbap, buffer[:quantityBytes])
-			} else if req.fc == FCReadInputRegisters {
-				_, err = tx.ResponseReadInputRegisters(mbap, buffer[:quantityBytes])
-			} else if req.fc == FCReadDiscreteInputs {
-				_, err = tx.ResponseReadDiscreteInput(mbap, buffer[:quantityBytes])
-			} else {
-				panic("unhandled case") // unreachable.
-			}
-
-		case FCWriteSingleRegister, FCWriteSingleCoil:
-			address := req.reqVal1
-			value := req.reqVal2
-			binary.BigEndian.PutUint16(buffer[:2], value)
-			err = cs.data.Write(req.fc, address, 1, buffer[:2])
-			if err != nil {
-				err = fmt.Errorf("handling fc=%#X accessing data model: %w", req.fc, err)
-				break
-			}
-			if req.fc == FCWriteSingleCoil {
-				_, err = tx.ResponseWriteSingleCoil(mbap, address, value == 0xff00)
-			} else if req.fc == FCWriteSingleRegister {
-				_, err = tx.ResponseWriteSingleRegister(mbap, address, value)
-			} else {
-				panic("unhandled case") // unreachable.
-			}
-
-		default:
-			err = fmt.Errorf("unhandled request function code %#X (%d)", req.fc, req.fc)
+		mbap.Length = uint16(plen + 1)
+		err = mbap.Put(txBuf[:mbapsize])
+		if err != nil {
+			break
+		}
+		_, err = cs.conn.Write(txBuf[:plen+mbapsize])
+		if err != nil {
+			break
 		}
 	}
 	if i < 0 {
-		i = 0
+		i = 0 // Captured in defered closure.
 	}
 	return err
 }
 
-func (cs *serverState) callbacks() (RxCallbacks, TxCallbacks) {
-	return RxCallbacks{
-			OnError: func(rx *Rx, err error) {
+func (cs *serverState) callbacks() (peamodbus.RxCallbacks, peamodbus.TxCallbacks) {
+	return peamodbus.RxCallbacks{
+			OnError: func(rx *peamodbus.Rx, err error) {
 				cs.CloseConn(err)
-				rx.trp.Close()
 			},
-			OnException: func(rx *Rx, exceptCode uint8) error {
+			OnException: func(rx *peamodbus.Rx, exceptCode uint8) error {
 				return fmt.Errorf("got exception with code %d", exceptCode)
 			},
 			// See dataHandler method on cs.
 			OnDataAccess: cs.dataRequestHandler,
-			OnUnhandled: func(rx *Rx, fc FunctionCode, r io.Reader) error {
+			OnUnhandled: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
 				fmt.Printf("got unhandled function code %d\n", fc)
-				io.ReadAll(r)
 				return nil
 			},
-		}, TxCallbacks{
-			OnError: func(tx *Tx, err error) {
+		}, peamodbus.TxCallbacks{
+			OnError: func(tx *peamodbus.Tx, err error) {
 				cs.CloseConn(err)
-				tx.trp.Close()
 			},
 		}
 }
 
-func (cs *serverState) dataRequestHandler(rx *Rx, fc FunctionCode, r io.Reader) (err error) {
-	var buf [256]byte
-	var n int
-	switch fc {
+func (cs *serverState) dataRequestHandler(rx *peamodbus.Rx, fc peamodbus.FunctionCode, data []byte) (err error) {
+	fmt.Println("unhandled function code", fc)
+	return nil
+}
 
-	// Simplest Modbus request case consisting of a address and a quantity
-	case FCReadHoldingRegisters, FCReadInputRegisters, FCReadCoils, FCReadDiscreteInputs,
-		FCWriteSingleCoil, FCWriteSingleRegister:
-		n, err = io.ReadAtLeast(r, buf[:], 4)
-		if err != nil {
-			break
-		} else if n != 4 {
-			err = fmt.Errorf("expected 4 bytes data, got %d", n)
-			break
-		}
-		startAddress := binary.BigEndian.Uint16(buf[:2])
-		quantity := binary.BigEndian.Uint16(buf[2:4])
-		cs.NewPendingRequest(request{
-			transaction: rx.LastRecievedMBAP.Transaction,
-			unit:        rx.LastRecievedMBAP.Unit,
-			fc:          fc,
-			reqVal1:     startAddress,
-			reqVal2:     quantity,
-		})
+// ApplicationHeader is a compact representation of the MBAP header as described
+// by Modbus TCP Implementation Guide. This header precedes all Modbus TCP packets.
+type ApplicationHeader struct {
+	Transaction uint16
+	Protocol    uint16
+	Length      uint16
+	Unit        uint8
+}
 
-	case FCWriteMultipleCoils, FCWriteMultipleRegisters:
-		// We must handle multiple writes in request handler to avoid allocating memory.
-		_, err = io.ReadFull(r, buf[:5])
-		if err != nil {
-			break
-		}
-		startAddress := binary.BigEndian.Uint16(buf[:2])
-		quantity := binary.BigEndian.Uint16(buf[2:4])
-		byteCount := buf[4]
-		_, err = io.ReadAtLeast(r, buf[:], int(byteCount))
-		if err != nil {
-			break
-		}
-		cs.data.Write(fc, startAddress, quantity, buf[:byteCount])
-	default:
-		fmt.Println("unhandled function code", fc)
+// DecodeMBAP reads the MBAP header present in all TCP Modbus packets.
+//
+// The amount of bytes that are expected to remain in the reader after
+// a succesful call to this function is mbap.Length-1.
+func DecodeMBAP(r io.Reader) (mbap ApplicationHeader, n int, err error) {
+	// We perform two passes to fail fast in case the protocol is unexpected.
+	// We are not so much doing this because this is "faster", but because
+	// we do not want to read more than we need from the reader in case the reader
+	// is buffered and blocks when reaching end of buffer.
+	var buf [4]byte
+	n, err = io.ReadFull(r, buf[:])
+	if err != nil {
+		return ApplicationHeader{}, n, err
 	}
-	return err
+	mbap.Transaction = binary.BigEndian.Uint16(buf[:2])
+	mbap.Protocol = binary.BigEndian.Uint16(buf[2:4])
+	if mbap.Protocol != 0 {
+		return ApplicationHeader{}, n, fmt.Errorf("MBAP header got %d protocol, expected 0", mbap.Protocol)
+	}
+	ngot, err := io.ReadFull(r, buf[:3])
+	n += ngot
+	if err != nil {
+		return ApplicationHeader{}, n, err
+	}
+	mbap.Length = binary.BigEndian.Uint16(buf[:2])
+	mbap.Unit = buf[2]
+	if mbap.Length < 2 {
+		return ApplicationHeader{}, n, errors.New("MBAP header has Length field set to value under 2 or over 256")
+	}
+	return mbap, n, nil
+}
+
+func (ap *ApplicationHeader) Encode(w io.Writer) (int, error) {
+	if ap.Length < 2 || ap.Length > 256 {
+		return 0, errors.New("invalid MBAP length")
+	}
+	if ap.Protocol != 0 {
+		return 0, errors.New("invalid protocol, must be 0")
+	}
+	var buf [7]byte
+	ap.Put(buf[:])
+	return w.Write(buf[:])
+}
+
+// Put puts the MBAP Header's 7 bytes in buf.
+func (ap *ApplicationHeader) Put(buf []byte) error {
+	if len(buf) < 7 {
+		return io.ErrShortBuffer
+	}
+	binary.BigEndian.PutUint16(buf[:2], ap.Transaction)
+	binary.BigEndian.PutUint16(buf[2:4], ap.Protocol)
+	binary.BigEndian.PutUint16(buf[4:6], ap.Length)
+	buf[6] = ap.Unit
+	return nil
 }
