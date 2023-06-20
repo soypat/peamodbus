@@ -75,9 +75,9 @@ func (req *Request) Response(tx *Tx, model ObjectModel, dst, scratch []byte) (pa
 	address := req.maybeAddr
 	if fc == FCWriteSingleRegister || fc == FCWriteSingleCoil {
 		binary.BigEndian.PutUint16(scratch[:2], quantityBytes)
-		err = WriteToModel(model, fc, address, 1, scratch[:2])
+		err = writeToModel(model, fc, address, 1, scratch[:2])
 	} else {
-		err = ReadFromModel(scratch[:quantityBytes], model, fc, address, req.maybeValueQuantity)
+		err = readFromModel(scratch[:quantityBytes], model, fc, address, req.maybeValueQuantity)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("handling fc=%q accessing data model: %w", fc, err)

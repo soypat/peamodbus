@@ -51,10 +51,10 @@ type ObjectModel interface {
 	SetHoldingRegister(i int, value uint16)
 }
 
-// ReadFromModel reads data from the model into dst as per specified by fc, the start address and
+// readFromModel reads data from the model into dst as per specified by fc, the start address and
 // the length of dst buffer. It is a low level primitive that is used by
 // differente modbus implementations.
-func ReadFromModel(dst []byte, model ObjectModel, fc FunctionCode, startAddress, quantity uint16) error {
+func readFromModel(dst []byte, model ObjectModel, fc FunctionCode, startAddress, quantity uint16) error {
 	bitSize := fc == FCReadCoils || fc == FCReadDiscreteInputs
 	endAddress := startAddress + quantity
 	switch {
@@ -90,9 +90,9 @@ func ReadFromModel(dst []byte, model ObjectModel, fc FunctionCode, startAddress,
 	return nil
 }
 
-// WriteToModel implements the low level API for modifying the Object Model's data
+// writeToModel implements the low level API for modifying the Object Model's data
 // using data obtained directly from a modbus transaction.
-func WriteToModel(model ObjectModel, fc FunctionCode, startAddress, quantity uint16, data []byte) error {
+func writeToModel(model ObjectModel, fc FunctionCode, startAddress, quantity uint16, data []byte) error {
 	bitSize := fc == FCWriteSingleCoil || fc == FCWriteMultipleCoils
 	endAddress := startAddress + quantity
 	switch {
