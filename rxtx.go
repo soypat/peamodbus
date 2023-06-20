@@ -15,15 +15,23 @@ type Request struct {
 	maybeValueQuantity uint16
 }
 
+func (req Request) String() string {
+	if req.FC.IsWrite() {
+		return fmt.Sprintf("request to %s @ Addr: %d, Value: %d", req.FC, req.maybeAddr, req.maybeValueQuantity)
+	}
+	return fmt.Sprintf("request to %s @ Addr: %d, Quantity: %d", req.FC, req.maybeAddr, req.maybeValueQuantity)
+}
+
 // Response generates a response packet for the request.
 func (req *Request) Response(tx *Tx, model DataModel, dst, scratch []byte) (packet int, err error) {
 	fc := req.FC
+	isRead := fc.IsRead()
 	shortSize := fc == FCReadHoldingRegisters || fc == FCReadInputRegisters
 	quantityBytes := req.maybeValueQuantity
 	if shortSize {
 		quantityBytes *= 2
 	}
-	if int(quantityBytes) > len(scratch) {
+	if isRead && int(quantityBytes) > len(scratch) {
 		return 0, io.ErrShortBuffer
 	}
 	address := req.maybeAddr

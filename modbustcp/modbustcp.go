@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/soypat/peamodbus"
@@ -102,6 +101,9 @@ func (sv *Server) Accept(ctx context.Context) error {
 // HandleNext reads the next message on the network and handles it automatically.
 // This call is blocking.
 func (sv *Server) HandleNext() error {
+	if err := sv.Err(); err != nil {
+		return err
+	}
 	mbap, n, err := DecodeMBAP(sv.state.conn)
 	if err != nil {
 		if n != 0 {
@@ -109,8 +111,15 @@ func (sv *Server) HandleNext() error {
 		}
 		return err
 	}
+	sv.state.mu.Lock()
+	sv.state.lastMBAP = mbap
+	sv.state.mu.Unlock()
 	var buf [256]byte
 	remaining := mbap.Length - 1
+	_, err = io.ReadFull(sv.state.conn, buf[:remaining])
+	if err != nil {
+		return err
+	}
 	err = sv.rx.Receive(buf[:remaining])
 	if err != nil {
 		return err
@@ -137,117 +146,6 @@ func (sv *Server) Addr() net.Addr {
 		return &net.TCPAddr{}
 	}
 	return sv.state.listener.Addr()
-}
-
-// serverState stores the persisting state of a websocket server connection.
-// Since this state is shared between frames it is protected by a mutex so that
-// the Client implementation is concurrent-safe.
-type serverState struct {
-	mu       sync.Mutex
-	listener *net.TCPListener
-	conn     net.Conn
-	data     peamodbus.DataModel
-	closeErr error
-	//
-	pendingRequests []request
-}
-
-// Err returns the error responsible for a closed connection. The wrapped chain of errors
-// will contain exceptions, io.EOF or a net.ErrClosed error.
-//
-// Err is safe to call concurrently.
-func (cs *serverState) Err() error {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	return cs.closeErr
-}
-
-// CloseConn closes the connection so that future calls to Err() return argument err.
-func (cs *serverState) CloseConn(err error) {
-	if err == nil {
-		panic("cannot close connection with nil error")
-	}
-	cs.mu.Lock()
-	cs.closeErr = err
-	cs.listener.Close()
-	cs.mu.Unlock()
-}
-
-// IsConnected returns true if there is an active connection to a modbus client. It is shorthand for cs.Err() == nil.
-//
-// IsConnected is safe to call concurrently.
-func (cs *serverState) IsConnected() bool { return cs.Err() == nil }
-
-type request struct {
-	// MBAP data includes transaction number and unit.
-	transaction uint16
-	unit        uint8
-	req         peamodbus.Request
-}
-
-// NewPendingRequest adds a request to the LIFO queue.
-func (cs *serverState) NewPendingRequest(r request) {
-	cs.mu.Lock()
-	cs.pendingRequests = append(cs.pendingRequests, r)
-	cs.mu.Unlock()
-}
-
-func (cs *serverState) HandlePendingRequests(tx *peamodbus.Tx) (err error) {
-	const mbapsize = 7
-	var scratch, txBuf [256 + mbapsize]byte
-	cs.mu.Lock()
-	i := len(cs.pendingRequests) - 1
-	defer func() {
-		cs.pendingRequests = cs.pendingRequests[:i] // Remove handled requests from list.
-		cs.mu.Unlock()
-	}()
-	for ; i >= 0; i-- {
-		req := cs.pendingRequests[i]
-		plen, err := req.req.Response(tx, cs.data, txBuf[mbapsize:], scratch[:])
-		if err != nil {
-			break
-		}
-		mbap := ApplicationHeader{Transaction: req.transaction, Protocol: 0, Unit: req.unit}
-		mbap.Length = uint16(plen + 1)
-		err = mbap.Put(txBuf[:mbapsize])
-		if err != nil {
-			break
-		}
-		_, err = cs.conn.Write(txBuf[:plen+mbapsize])
-		if err != nil {
-			break
-		}
-	}
-	if i < 0 {
-		i = 0 // Captured in defered closure.
-	}
-	return err
-}
-
-func (cs *serverState) callbacks() (peamodbus.RxCallbacks, peamodbus.TxCallbacks) {
-	return peamodbus.RxCallbacks{
-			OnError: func(rx *peamodbus.Rx, err error) {
-				cs.CloseConn(err)
-			},
-			OnException: func(rx *peamodbus.Rx, exceptCode uint8) error {
-				return fmt.Errorf("got exception with code %d", exceptCode)
-			},
-			// See dataHandler method on cs.
-			OnDataAccess: cs.dataRequestHandler,
-			OnUnhandled: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
-				fmt.Printf("got unhandled function code %d\n", fc)
-				return nil
-			},
-		}, peamodbus.TxCallbacks{
-			OnError: func(tx *peamodbus.Tx, err error) {
-				cs.CloseConn(err)
-			},
-		}
-}
-
-func (cs *serverState) dataRequestHandler(rx *peamodbus.Rx, fc peamodbus.FunctionCode, data []byte) (err error) {
-	fmt.Println("unhandled function code", fc)
-	return nil
 }
 
 // ApplicationHeader is a compact representation of the MBAP header as described

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/soypat/peamodbus"
+	"github.com/soypat/peamodbus/modbustcp"
 )
 
 // This program creates a modbus server that adds 1 to
@@ -13,7 +14,7 @@ import (
 
 func main() {
 	var dataBank peamodbus.BlockedModel
-	sv, err := peamodbus.NewServer(peamodbus.ServerConfig{
+	sv, err := modbustcp.NewServer(modbustcp.ServerConfig{
 		Address:        "localhost:8080",
 		ConnectTimeout: 5 * time.Second,
 		DataModel:      &dataBank,
@@ -34,6 +35,7 @@ func main() {
 		err = sv.HandleNext()
 		if err != nil {
 			log.Println("error in HandleNext", err)
+			time.Sleep(time.Second)
 		} else {
 			for i := range dataBank.HoldingRegisters {
 				dataBank.HoldingRegisters[i]++
