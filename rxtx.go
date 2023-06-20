@@ -7,6 +7,44 @@ import (
 	"io"
 )
 
+var ErrMissingPacketData = errors.New("missing packet data")
+
+// InferRequestPacketLength returns the expected length of a request packet in bytes
+// by looking at the function code as the first byte of the packet and the
+// contained data in the packet.
+func InferRequestPacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
+	if len(b) < 1 {
+		return 0, 0, ErrMissingPacketData
+	}
+	fc = FunctionCode(b[0])
+	switch fc {
+	case FCReadCoils, FCReadDiscreteInputs, FCReadHoldingRegisters, FCReadInputRegisters,
+		FCWriteSingleCoil, FCWriteSingleRegister:
+		n = 5
+	case FCReadExceptionStatus, FCGetComEventCounter, FCGetComEventLog, FCReportServerID:
+		n = 1
+	case FCWriteMultipleCoils, FCWriteMultipleRegisters:
+		if len(b) < 6 {
+			return 0, 0, ErrMissingPacketData
+		}
+		n = uint16(b[5])
+		if fc == FCWriteMultipleCoils && n%8 != 0 {
+			n++
+		} else if fc == FCWriteMultipleRegisters {
+			n *= 2
+		}
+		n += 6
+
+	case FCDiagnostic:
+
+		fallthrough
+	default:
+		err = errors.New("unsupported function code: " + fc.String())
+	}
+
+	return fc, n, err
+}
+
 type Request struct {
 	FC FunctionCode
 	// First value usually contains Modbus address value.

@@ -1,9 +1,10 @@
-package modbustcp
+package rtu
 
 import (
 	"fmt"
-	"net"
+	"io"
 	"sync"
+	"time"
 
 	"github.com/soypat/peamodbus"
 )
@@ -13,13 +14,19 @@ import (
 // the Client implementation is concurrent-safe.
 type serverState struct {
 	mu       sync.Mutex
-	lastMBAP applicationHeader
-	listener *net.TCPListener
-	conn     net.Conn
 	data     peamodbus.DataModel
 	closeErr error
-	//
-	pendingRequests []request
+	port     io.ReadWriter
+	// pendingRequest is the request that is currently being processed.
+	// While set the server will wait for reply.
+
+	pendingRequest peamodbus.Request
+
+	murx       sync.Mutex
+	lastRxTime time.Time
+	dataStart  int
+	dataEnd    int
+	rxbuf      [512]byte
 }
 
 // Err returns the error responsible for a closed connection. The wrapped chain of errors
@@ -31,16 +38,14 @@ func (cs *serverState) Err() error {
 	defer cs.mu.Unlock()
 	return cs.closeErr
 }
-
-// CloseConn closes the connection so that future calls to Err() return argument err.
-func (cs *serverState) CloseConn(err error) {
-	if err == nil {
-		panic("cannot close connection with nil error")
-	}
-	cs.mu.Lock()
-	cs.closeErr = err
-	cs.listener.Close()
-	cs.mu.Unlock()
+func (cs *serverState) ResetRxBuf() {
+	cs.murx.Lock()
+	cs.resetRxBuf()
+	cs.murx.Unlock()
+}
+func (cs *serverState) resetRxBuf() {
+	cs.dataStart = 0
+	cs.dataEnd = 0
 }
 
 // IsConnected returns true if there is an active connection to a modbus client. It is shorthand for cs.Err() == nil.
@@ -48,56 +53,31 @@ func (cs *serverState) CloseConn(err error) {
 // IsConnected is safe to call concurrently.
 func (cs *serverState) IsConnected() bool { return cs.Err() == nil }
 
-type request struct {
-	// MBAP data includes transaction number and unit.
-	transaction uint16
-	unit        uint8
-	req         peamodbus.Request
-}
-
 // NewPendingRequest adds a request to the LIFO queue.
-func (cs *serverState) NewPendingRequest(r request) {
+func (cs *serverState) NewPendingRequest(r peamodbus.Request) {
 	cs.mu.Lock()
-	cs.pendingRequests = append(cs.pendingRequests, r)
+	cs.pendingRequest = r
 	cs.mu.Unlock()
 }
 
 func (cs *serverState) HandlePendingRequests(tx *peamodbus.Tx) (err error) {
-	const mbapsize = 7
+	const mbapsize = 1
 	var scratch, txBuf [256 + mbapsize]byte
 	cs.mu.Lock()
-	i := len(cs.pendingRequests) - 1
-	defer func() {
-		cs.pendingRequests = cs.pendingRequests[:i] // Remove handled requests from list.
-		cs.mu.Unlock()
-	}()
-	for ; i >= 0; i-- {
-		req := cs.pendingRequests[i]
-		if req.req.FC == peamodbus.FCWriteSingleCoil {
-			_ = req
-		}
-		plen, err := req.req.Response(tx, cs.data, txBuf[mbapsize:], scratch[:])
-		if err != nil {
-			break
-		}
-		mbap := applicationHeader{Transaction: req.transaction, Protocol: 0, Unit: req.unit}
-		mbap.Length = uint16(plen + 1)
-		_ = mbap.Put(txBuf[:mbapsize])
-		_, err = cs.conn.Write(txBuf[:plen+mbapsize])
-		if err != nil {
-			break
-		}
+	req := cs.pendingRequest
+	plen, err := req.Response(tx, cs.data, txBuf[mbapsize:], scratch[:])
+	if err != nil {
+		return err
 	}
-	if i < 0 {
-		i = 0 // Captured in defered closure.
-	}
+	_, err = cs.port.Write(txBuf[:plen+mbapsize])
 	return err
 }
 
 func (cs *serverState) callbacks() (peamodbus.RxCallbacks, peamodbus.TxCallbacks) {
 	return peamodbus.RxCallbacks{
 			OnError: func(rx *peamodbus.Rx, err error) {
-				cs.CloseConn(err)
+				println(err.Error())
+				// cs.CloseConn(err)
 			},
 			OnException: func(rx *peamodbus.Rx, exceptCode uint8) error {
 				return fmt.Errorf("got exception with code %d", exceptCode)
@@ -110,19 +90,17 @@ func (cs *serverState) callbacks() (peamodbus.RxCallbacks, peamodbus.TxCallbacks
 				return nil
 			},
 		}, peamodbus.TxCallbacks{
-			OnError: func(tx *peamodbus.Tx, err error) {
-				cs.CloseConn(err)
-			},
+			OnError: nil,
 		}
 }
 
 func (cs *serverState) dataModelRequestHandler(rx *peamodbus.Rx, req peamodbus.Request) error {
-	fmt.Println("got data model request", req, cs.lastMBAP)
-	cs.NewPendingRequest(request{transaction: cs.lastMBAP.Transaction, unit: cs.lastMBAP.Unit, req: req})
+	println("got data model request", req.String())
+	cs.NewPendingRequest(req)
 	return nil
 }
 
 func (cs *serverState) dataRequestHandler(rx *peamodbus.Rx, fc peamodbus.FunctionCode, data []byte) (err error) {
-	fmt.Println("unhandled function code", fc)
+	println("unhandled function code", fc.String())
 	return nil
 }

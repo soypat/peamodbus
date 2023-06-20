@@ -61,7 +61,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 
 	sv := &Server{
-		state:      serverState{closeErr: net.ErrClosed, data: cfg.DataModel},
+		state:      serverState{closeErr: errors.New("not yet connected"), data: cfg.DataModel},
 		tcpTimeout: cfg.ConnectTimeout,
 		// keepalive:  cfg.KeepAlive,
 		address: *net.TCPAddrFromAddrPort(address),
@@ -104,7 +104,7 @@ func (sv *Server) HandleNext() error {
 	if err := sv.Err(); err != nil {
 		return err
 	}
-	mbap, n, err := DecodeMBAP(sv.state.conn)
+	mbap, n, err := decodeMBAP(sv.state.conn)
 	if err != nil {
 		if n != 0 {
 			sv.state.CloseConn(err)
@@ -148,20 +148,20 @@ func (sv *Server) Addr() net.Addr {
 	return sv.state.listener.Addr()
 }
 
-// ApplicationHeader is a compact representation of the MBAP header as described
+// applicationHeader is a compact representation of the MBAP header as described
 // by Modbus TCP Implementation Guide. This header precedes all Modbus TCP packets.
-type ApplicationHeader struct {
+type applicationHeader struct {
 	Transaction uint16
 	Protocol    uint16
 	Length      uint16
 	Unit        uint8
 }
 
-// DecodeMBAP reads the MBAP header present in all TCP Modbus packets.
+// decodeMBAP reads the MBAP header present in all TCP Modbus packets.
 //
 // The amount of bytes that are expected to remain in the reader after
 // a succesful call to this function is mbap.Length-1.
-func DecodeMBAP(r io.Reader) (mbap ApplicationHeader, n int, err error) {
+func decodeMBAP(r io.Reader) (mbap applicationHeader, n int, err error) {
 	// We perform two passes to fail fast in case the protocol is unexpected.
 	// We are not so much doing this because this is "faster", but because
 	// we do not want to read more than we need from the reader in case the reader
@@ -169,27 +169,27 @@ func DecodeMBAP(r io.Reader) (mbap ApplicationHeader, n int, err error) {
 	var buf [4]byte
 	n, err = io.ReadFull(r, buf[:])
 	if err != nil {
-		return ApplicationHeader{}, n, err
+		return applicationHeader{}, n, err
 	}
 	mbap.Transaction = binary.BigEndian.Uint16(buf[:2])
 	mbap.Protocol = binary.BigEndian.Uint16(buf[2:4])
 	if mbap.Protocol != 0 {
-		return ApplicationHeader{}, n, fmt.Errorf("MBAP header got %d protocol, expected 0", mbap.Protocol)
+		return applicationHeader{}, n, fmt.Errorf("MBAP header got %d protocol, expected 0", mbap.Protocol)
 	}
 	ngot, err := io.ReadFull(r, buf[:3])
 	n += ngot
 	if err != nil {
-		return ApplicationHeader{}, n, err
+		return applicationHeader{}, n, err
 	}
 	mbap.Length = binary.BigEndian.Uint16(buf[:2])
 	mbap.Unit = buf[2]
 	if mbap.Length < 2 {
-		return ApplicationHeader{}, n, errors.New("MBAP header has Length field set to value under 2 or over 256")
+		return applicationHeader{}, n, errors.New("MBAP header has Length field set to value under 2 or over 256")
 	}
 	return mbap, n, nil
 }
 
-func (ap *ApplicationHeader) Encode(w io.Writer) (int, error) {
+func (ap *applicationHeader) Encode(w io.Writer) (int, error) {
 	if ap.Length < 2 || ap.Length > 256 {
 		return 0, errors.New("invalid MBAP length")
 	}
@@ -202,7 +202,7 @@ func (ap *ApplicationHeader) Encode(w io.Writer) (int, error) {
 }
 
 // Put puts the MBAP Header's 7 bytes in buf.
-func (ap *ApplicationHeader) Put(buf []byte) error {
+func (ap *applicationHeader) Put(buf []byte) error {
 	if len(buf) < 7 {
 		return io.ErrShortBuffer
 	}

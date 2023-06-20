@@ -4,6 +4,13 @@ type FunctionCode uint8
 
 // Data access function codes.
 const (
+	// FCReadCoils a.k.a ReadDiscreteOutputs.
+	// Request:
+	//  0    1        2           3         4         5
+	//  | FC | StartAddr (uint16) | Quantity (uint16) |
+	// Response:
+	//  0    1             2            2+n+X   where X=n%8 == 0 ? 0 : 1
+	//  | FC | ByteCount=n | Coil status |
 	FCReadCoils                  FunctionCode = 0x01
 	FCReadDiscreteInputs         FunctionCode = 0x02
 	FCReadHoldingRegisters       FunctionCode = 0x03
