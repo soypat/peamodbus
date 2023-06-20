@@ -113,7 +113,7 @@ func (sv *Server) HandleNext() error {
 	}
 	mbap, n, err := decodeMBAP(sv.state.conn)
 	if err != nil {
-		if n != 0 {
+		if n != 0 || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 			sv.state.CloseConn(err)
 		}
 		return err

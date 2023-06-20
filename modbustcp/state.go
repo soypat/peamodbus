@@ -15,7 +15,7 @@ type serverState struct {
 	mu       sync.Mutex
 	lastMBAP applicationHeader
 	listener *net.TCPListener
-	conn     net.Conn
+	conn     *net.TCPConn
 	data     peamodbus.DataModel
 	closeErr error
 	//

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -25,6 +26,7 @@ func main() {
 	ctx := context.Background()
 	for {
 		if !sv.IsConnected() {
+			fmt.Println("attempting connection")
 			err = sv.Accept(ctx)
 			if err != nil {
 				log.Println("error connecting", err)
