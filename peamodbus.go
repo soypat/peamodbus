@@ -32,15 +32,16 @@ package peamodbus
 import (
 	"encoding/binary"
 	"errors"
+	"sync"
 )
 
-// ObjectModel is the core abstraction of the register data in the modbus protocol.
+// DataModel is the core abstraction of the register data in the modbus protocol.
 // The definition of this interface allows for abstract
 // representations of the Modbus data allowing for
 // low memory representations of registers that are ideal for microcontrollers.
 // An explicit representation of Modbus memory ([BlockedModel]) occupies a kilobyte,
 // This could be reduced to just 2 bytes for a controller that just operates a 16bit sensor.
-type ObjectModel interface {
+type DataModel interface {
 	GetCoil(i int) bool
 	SetCoil(i int, b bool)
 	GetDiscreteInput(i int) bool
@@ -54,7 +55,7 @@ type ObjectModel interface {
 // readFromModel reads data from the model into dst as per specified by fc, the start address and
 // the length of dst buffer. It is a low level primitive that is used by
 // differente modbus implementations.
-func readFromModel(dst []byte, model ObjectModel, fc FunctionCode, startAddress, quantity uint16) error {
+func readFromModel(dst []byte, model DataModel, fc FunctionCode, startAddress, quantity uint16) error {
 	bitSize := fc == FCReadCoils || fc == FCReadDiscreteInputs
 	endAddress := startAddress + quantity
 	switch {
@@ -92,7 +93,7 @@ func readFromModel(dst []byte, model ObjectModel, fc FunctionCode, startAddress,
 
 // writeToModel implements the low level API for modifying the Object Model's data
 // using data obtained directly from a modbus transaction.
-func writeToModel(model ObjectModel, fc FunctionCode, startAddress, quantity uint16, data []byte) error {
+func writeToModel(model DataModel, fc FunctionCode, startAddress, quantity uint16, data []byte) error {
 	bitSize := fc == FCWriteSingleCoil || fc == FCWriteMultipleCoils
 	endAddress := startAddress + quantity
 	switch {
@@ -130,7 +131,7 @@ type BlockedModel struct {
 	holdingRegisters [125]uint16
 }
 
-var _ ObjectModel = &BlockedModel{}
+var _ DataModel = &BlockedModel{}
 
 func (dm *BlockedModel) GetHoldingRegister(i int) uint16 {
 	return dm.holdingRegisters[i]
@@ -149,7 +150,7 @@ func (dm *BlockedModel) SetInputRegister(i int, v uint16) {
 }
 
 // GetCoil returns 1 if the coil at position i is set and 0 if it is not.
-// Expects a position of equal or under 2000.
+// Expects coil index in range 0..2000.
 func (sm *BlockedModel) GetCoil(i int) bool {
 	if i >= 2000 {
 		panic("coil exceeds limit")
@@ -158,6 +159,8 @@ func (sm *BlockedModel) GetCoil(i int) bool {
 	return sm.coils[idx]&(1<<bit) != 0
 }
 
+// SetCoil sets the coil at position i to 1 if value is true and to 0 if value is false.
+// Expects coil index in range 0..2000.
 func (sm *BlockedModel) SetCoil(i int, value bool) {
 	if i >= 2000 {
 		panic("coil exceeds limit")
@@ -171,7 +174,7 @@ func (sm *BlockedModel) SetCoil(i int, value bool) {
 }
 
 // GetDiscreteInput returns 1 if the discrete input at position i is set and 0 if it is not.
-// Expects a position of equal or under 2000.
+// Expects discrete input index in range 0..2000.
 func (sm *BlockedModel) GetDiscreteInput(i int) bool {
 	if i >= 2000 {
 		panic("discrete input exceeds limit")
@@ -180,6 +183,8 @@ func (sm *BlockedModel) GetDiscreteInput(i int) bool {
 	return sm.discreteInputs[idx]&(1<<bit) != 0
 }
 
+// SetDiscreteInput sets the discrete input at position i to 1 if value is true and 0 if it is false.
+// Expects discrete input index in range 0..2000.
 func (sm *BlockedModel) SetDiscreteInput(i int, value bool) {
 	if i >= 2000 {
 		panic("discrete input exceeds limit")
@@ -190,4 +195,68 @@ func (sm *BlockedModel) SetDiscreteInput(i int, value bool) {
 	} else {
 		sm.discreteInputs[idx] &^= (1 << bit)
 	}
+}
+
+// ConcurrencySafeDataModel returns a DataModel that is safe for concurrent use
+// from a existing datamodel.
+func ConcurrencySafeDataModel(dm DataModel) DataModel {
+	if dm == nil {
+		panic("nil DataModel")
+	}
+	return &lockedDataModel{
+		dm: dm,
+	}
+}
+
+type lockedDataModel struct {
+	mu sync.Mutex
+	dm DataModel
+}
+
+func (dm *lockedDataModel) GetHoldingRegister(i int) uint16 {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.dm.GetHoldingRegister(i)
+}
+
+func (dm *lockedDataModel) SetHoldingRegister(i int, v uint16) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.dm.SetHoldingRegister(i, v)
+}
+
+func (dm *lockedDataModel) GetInputRegister(i int) uint16 {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.dm.GetInputRegister(i)
+}
+
+func (dm *lockedDataModel) SetInputRegister(i int, v uint16) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.dm.SetInputRegister(i, v)
+}
+
+func (dm *lockedDataModel) GetCoil(i int) bool {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.dm.GetCoil(i)
+}
+
+func (dm *lockedDataModel) SetCoil(i int, v bool) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.dm.SetCoil(i, v)
+}
+
+func (dm *lockedDataModel) GetDiscreteInput(i int) bool {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.dm.GetDiscreteInput(i)
+}
+
+func (dm *lockedDataModel) SetDiscreteInput(i int, v bool) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.dm.SetDiscreteInput(i, v)
 }

@@ -15,7 +15,7 @@ import (
 // the Client implementation is concurrent-safe.
 type serverState struct {
 	mu         sync.Mutex
-	data       peamodbus.ObjectModel
+	data       peamodbus.DataModel
 	closeErr   error
 	port       io.ReadWriter
 	targetAddr uint8

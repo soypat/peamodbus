@@ -61,7 +61,7 @@ func (req Request) String() string {
 }
 
 // Response generates a response packet for the request.
-func (req *Request) Response(tx *Tx, model ObjectModel, dst, scratch []byte) (packet int, err error) {
+func (req *Request) Response(tx *Tx, model DataModel, dst, scratch []byte) (packet int, err error) {
 	fc := req.FC
 	isRead := fc.IsRead()
 	shortSize := fc == FCReadHoldingRegisters || fc == FCReadInputRegisters

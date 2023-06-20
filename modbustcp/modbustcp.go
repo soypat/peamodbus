@@ -45,7 +45,7 @@ type ServerConfig struct {
 	// DataModel defines the data bank used for data access operations
 	// such as read/write operations with coils, discrete inputs, holding registers etc.
 	// If nil a default data model will be chosen.
-	DataModel peamodbus.ObjectModel
+	DataModel peamodbus.DataModel
 }
 
 // NewServer returns a Server ready for use.
@@ -68,6 +68,13 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	sv.rx.RxCallbacks, sv.tx.TxCallbacks = sv.state.callbacks()
 	return sv, nil
+}
+
+// DataModel returns the active handle the the modbus data model. Changes to the
+// data model are reflected in the server's behavior. There is no concurrent protection
+// for the data model.
+func (sv *Server) DataModel() peamodbus.DataModel {
+	return sv.state.data
 }
 
 // Accept begins listening on the server's TCP address. If the server already

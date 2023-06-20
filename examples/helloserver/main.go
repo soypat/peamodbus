@@ -13,11 +13,11 @@ import (
 // all holding registers on every client request.
 
 func main() {
-	var dataBank peamodbus.BlockedModel
+	dataBank := peamodbus.ConcurrencySafeDataModel(&peamodbus.BlockedModel{})
 	sv, err := modbustcp.NewServer(modbustcp.ServerConfig{
 		Address:        "localhost:8080",
 		ConnectTimeout: 5 * time.Second,
-		DataModel:      &dataBank,
+		DataModel:      dataBank,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -37,9 +37,9 @@ func main() {
 			log.Println("error in HandleNext", err)
 			time.Sleep(time.Second)
 		} else {
-			for i := 0; i < 125; i++ {
-				value := dataBank.GetHoldingRegister(i)
-				dataBank.SetHoldingRegister(i, value+1)
+			for addr := 0; addr < 125; addr++ {
+				value := dataBank.GetHoldingRegister(addr)
+				dataBank.SetHoldingRegister(addr, value+1)
 			}
 		}
 		if err := sv.Err(); err != nil {
