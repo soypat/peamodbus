@@ -4,6 +4,13 @@ type FunctionCode uint8
 
 // Data access function codes.
 const (
+	// FCReadCoils a.k.a ReadDiscreteOutputs.
+	// Request:
+	//  0    1        2           3         4         5
+	//  | FC | StartAddr (uint16) | Quantity (uint16) |
+	// Response:
+	//  0    1             2            2+n+X   where X=n%8 == 0 ? 0 : 1
+	//  | FC | ByteCount=n | Coil status |
 	FCReadCoils                  FunctionCode = 0x01
 	FCReadDiscreteInputs         FunctionCode = 0x02
 	FCReadHoldingRegisters       FunctionCode = 0x03
@@ -41,4 +48,50 @@ func (fc FunctionCode) IsRead() bool {
 	return fc == FCReadCoils || fc == FCReadDiscreteInputs ||
 		fc == FCReadHoldingRegisters || fc == FCReadInputRegisters ||
 		fc == FCReadFIFOQueue || fc == FCReadFileRecord
+}
+
+func (fc FunctionCode) String() (s string) {
+	switch fc {
+	case FCReadCoils:
+		s = "read coils"
+	case FCReadDiscreteInputs:
+		s = "read discrete inputs"
+	case FCReadHoldingRegisters:
+		s = "read holding registers"
+	case FCReadInputRegisters:
+		s = "read input registers"
+	case FCWriteSingleCoil:
+		s = "write single coil"
+	case FCWriteSingleRegister:
+		s = "write single register"
+	case FCWriteMultipleRegisters:
+		s = "write multiple registers"
+	case FCReadFileRecord:
+		s = "read file record"
+	case FCWriteFileRecord:
+		s = "write file record"
+	case FCMaskWriteRegister:
+		s = "mask write register"
+	case FCReadWriteMultipleRegisters:
+		s = "read/write multiple registers"
+	case FCReadFIFOQueue:
+		s = "read FIFO queue"
+	case FCWriteMultipleCoils:
+		s = "write multiple coils"
+	case FCReadExceptionStatus:
+		s = "read exception status"
+	case FCDiagnostic:
+		s = "diagnostic"
+	case FCGetComEventCounter:
+		s = "get com event counter"
+	case FCGetComEventLog:
+		s = "get com event log"
+	case FCReportServerID:
+		s = "report server ID"
+	case FCReadDeviceIdentification:
+		s = "read device identification"
+	default:
+		s = "unknown function code"
+	}
+	return s
 }
