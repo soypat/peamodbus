@@ -1,4 +1,4 @@
-package rtu
+package modbusrtu
 
 import (
 	"errors"
