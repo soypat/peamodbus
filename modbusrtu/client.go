@@ -57,7 +57,7 @@ func (c *Client) ReadHoldingRegisters(devAddr uint8, regAddr uint16, regs []uint
 	var pdu []byte
 	var addr uint8
 	for time.Until(deadline) > 0 && errcount < 5 {
-		pdu, addr, err = c.state.TryRx()
+		pdu, addr, err = c.state.TryRx(true)
 		if err == nil && devAddr == addr {
 			break
 		}

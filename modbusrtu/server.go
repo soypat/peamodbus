@@ -40,9 +40,10 @@ func NewServer(port io.ReadWriter, cfg ServerConfig) *Server {
 	sv := &Server{
 		address: cfg.Address,
 		state: connState{
-			closeErr: errors.New("not yet connected"),
-			data:     cfg.DataModel,
-			port:     port,
+			closeErr:    errors.New("not yet connected"),
+			data:        cfg.DataModel,
+			port:        port,
+			pendingAddr: cfg.Address,
 		},
 	}
 	sv.rx.RxCallbacks, sv.tx.TxCallbacks = sv.state.callbacks()
@@ -55,7 +56,7 @@ func (sv *Server) HandleNext() (err error) {
 	var packet []byte
 	var addr uint8
 	for {
-		packet, addr, err = sv.state.TryRx()
+		packet, addr, err = sv.state.TryRx(false)
 		if err != nil {
 			if errors.Is(err, peamodbus.ErrMissingPacketData) {
 				continue

@@ -20,14 +20,14 @@ var (
 // Since this state is shared between frames it is protected by a mutex so that
 // the Client implementation is concurrent-safe.
 type connState struct {
-	mu         sync.Mutex
-	data       peamodbus.DataModel
-	closeErr   error
-	port       io.ReadWriter
-	targetAddr uint8
+	mu       sync.Mutex
+	data     peamodbus.DataModel
+	closeErr error
+	port     io.ReadWriter
+
 	// pendingRequest is the request that is currently being processed.
 	// While set the server will wait for reply.
-
+	pendingAddr    uint8
 	pendingRequest peamodbus.Request
 
 	murx       sync.Mutex
@@ -37,7 +37,7 @@ type connState struct {
 	rxbuf      [512]byte
 }
 
-func (state *connState) TryRx() (pdu []byte, address uint8, err error) {
+func (state *connState) TryRx(isResponse bool) (pdu []byte, address uint8, err error) {
 	state.murx.Lock()
 	defer state.murx.Unlock()
 	if state.dataEnd > 256 {
@@ -62,9 +62,14 @@ func (state *connState) TryRx() (pdu []byte, address uint8, err error) {
 			return nil, 0, peamodbus.ErrMissingPacketData // Still missing data
 		}
 	}
+	var pdulen uint16
+	if isResponse {
+		_, pdulen, err = peamodbus.InferResponsePacketLength(buf[state.dataStart+1 : state.dataEnd])
+	} else {
+		_, pdulen, err = peamodbus.InferRequestPacketLength(buf[state.dataStart+1 : state.dataEnd])
+	}
 
-	_, pdulen, err := peamodbus.InferRequestPacketLength(buf[state.dataStart+1 : state.dataEnd])
-	if err != nil {
+	if err != nil && !errors.Is(err, peamodbus.ErrMissingPacketData) {
 		if errors.Is(err, peamodbus.ErrBadFunctionCode) {
 			state.closeErr = err // Close connection, probably desynced.
 		}
@@ -131,9 +136,9 @@ func (cs *connState) HandlePendingRequests(tx *peamodbus.Tx) (err error) {
 	var scratch, txBuf [256 + mbapsize]byte
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	txBuf[0] = cs.targetAddr
+	txBuf[0] = cs.pendingAddr
 	req := cs.pendingRequest
-	plen, err := req.Response(tx, cs.data, txBuf[1:], scratch[:])
+	plen, err := req.PutResponse(tx, cs.data, txBuf[1:], scratch[:])
 	if err != nil {
 		return err
 	}

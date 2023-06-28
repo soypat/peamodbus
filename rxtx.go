@@ -12,7 +12,7 @@ var (
 	ErrBadFunctionCode   = errors.New("bad function code")
 )
 
-// InferRequestPacketLength returns the expected length of a request packet in bytes
+// InferRequestPacketLength returns the expected length of a client (master) request PDU in bytes
 // by looking at the function code as the first byte of the packet and the
 // contained data in the packet.
 func InferRequestPacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
@@ -48,6 +48,52 @@ func InferRequestPacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
 	return fc, n, err
 }
 
+// InferResponsePacketLength returns the expected length of a server (instrument) response PDU in bytes
+// by looking at the function code as the first byte of the response packet and the
+// contained data in the packet.
+func InferResponsePacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
+	if len(b) < 1 {
+		return 0, 0, ErrMissingPacketData
+	}
+	fc = FunctionCode(b[0])
+	switch fc {
+	case FCReadCoils, FCReadDiscreteInputs:
+		if len(b) < 2 {
+			return 0, 0, ErrMissingPacketData
+		}
+		n = uint16(b[1])
+		if n%8 != 0 {
+			n++
+		}
+		n += 2
+
+	case FCReadHoldingRegisters, FCReadInputRegisters:
+		if len(b) < 2 {
+			return 0, 0, ErrMissingPacketData
+		}
+		n = 2 + uint16(b[1])*2
+	case FCWriteSingleCoil, FCWriteSingleRegister, FCGetComEventCounter, FCWriteMultipleCoils, FCWriteMultipleRegisters:
+		n = 5
+	case FCReadExceptionStatus:
+		n = 2
+	case FCDiagnostic:
+		if len(b) < 2 {
+			return 0, 0, ErrMissingPacketData
+		}
+		n = 3 + uint16(b[1])
+	case FCGetComEventLog:
+		if len(b) < 2 {
+			return 0, 0, ErrMissingPacketData
+		}
+		n = 2 + uint16(b[1])
+
+	default:
+		err = ErrBadFunctionCode
+	}
+
+	return fc, n, err
+}
+
 // Request is a client (master) request meant for a server (instrument).
 type Request struct {
 	FC FunctionCode
@@ -64,8 +110,8 @@ func (req Request) String() string {
 	return fmt.Sprintf("request to %s @ Addr: %d, Quantity: %d", req.FC, req.maybeAddr, req.maybeValueQuantity)
 }
 
-// Response generates a response packet for the request.
-func (req *Request) Response(tx *Tx, model DataModel, dst, scratch []byte) (packet int, err error) {
+// PutResponse generates a response packet for the request.
+func (req *Request) PutResponse(tx *Tx, model DataModel, dst, scratch []byte) (packet int, err error) {
 	fc := req.FC
 	isRead := fc.IsRead()
 	shortSize := fc == FCReadHoldingRegisters || fc == FCReadInputRegisters

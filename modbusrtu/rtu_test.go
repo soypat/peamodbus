@@ -11,12 +11,12 @@ import (
 func TestIntegration(t *testing.T) {
 	const (
 		devAddr   = 1
-		startAddr = 0
+		startAddr = 1
 		nRegs     = 1
 	)
 	data := peamodbus.ConcurrencySafeDataModel(&peamodbus.BlockedModel{})
 	for i := startAddr; i < startAddr+nRegs; i++ {
-		u16 := generateCRC([]byte{byte(i), byte(i >> 8)})
+		u16 := uint16(1) // generateCRC([]byte{byte(i), byte(i >> 8)})
 		data.SetHoldingRegister(i, u16)
 	}
 	r1, w1 := io.Pipe()
@@ -41,7 +41,7 @@ func TestIntegration(t *testing.T) {
 	}()
 
 	var buf [125]uint16
-	err := cli.ReadHoldingRegisters(devAddr, 0, buf[:nRegs])
+	err := cli.ReadHoldingRegisters(devAddr, startAddr, buf[:nRegs])
 	if err != nil {
 		t.Fatal(err)
 	}

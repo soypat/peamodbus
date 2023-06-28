@@ -53,8 +53,7 @@ type DataModel interface {
 }
 
 // readFromModel reads data from the model into dst as per specified by fc, the start address and
-// the length of dst buffer. It is a low level primitive that is used by
-// differente modbus implementations.
+// the length of dst buffer. It is a low level primitive that receives raw modbus PDU data.
 func readFromModel(dst []byte, model DataModel, fc FunctionCode, startAddress, quantity uint16) error {
 	bitSize := fc == FCReadCoils || fc == FCReadDiscreteInputs
 	endAddress := startAddress + quantity - 1
@@ -94,7 +93,7 @@ func readFromModel(dst []byte, model DataModel, fc FunctionCode, startAddress, q
 }
 
 // writeToModel implements the low level API for modifying the Object Model's data
-// using data obtained directly from a modbus transaction.
+// using PDU data obtained directly from a modbus transaction.
 func writeToModel(model DataModel, fc FunctionCode, startAddress, quantity uint16, data []byte) error {
 	bitSize := fc == FCWriteSingleCoil || fc == FCWriteMultipleCoils
 	endAddress := startAddress + quantity
@@ -109,7 +108,7 @@ func writeToModel(model DataModel, fc FunctionCode, startAddress, quantity uint1
 
 	for i := uint16(0); i < quantity; i++ {
 		ireg := i + startAddress
-		switch fc {
+		switch fc { // TODO(soypat): Benchmark to see if using an `if bitsize` is faster.
 		case FCWriteMultipleRegisters, FCWriteSingleRegister:
 			model.SetHoldingRegister(int(ireg), binary.BigEndian.Uint16(data[i*2:]))
 		case FCWriteSingleCoil, FCWriteMultipleCoils:
