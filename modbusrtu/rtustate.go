@@ -45,16 +45,12 @@ func (state *connState) TryRx(isResponse bool) (pdu []byte, address uint8, err e
 		state.resetRxBuf()
 	}
 	buf := state.rxbuf[:]
-	buffered := state.dataEnd - state.dataStart
-	if buffered < 2 {
+
+	if buffered := state.buffered(); buffered < 2 {
 		// If we have read less than 2 bytes, we can't infer the length of the PDU.
 		// We read to reach 2 bytes. We do this since some read ops are blocking.
-		n, _ := state.port.Read(buf[state.dataEnd : state.dataEnd+2-buffered])
-		if n != 0 {
-			state.lastRxTime = time.Now()
-			state.dataEnd += n
-			buffered += n
-		}
+		n, err := state.read(2 - buffered)
+		buffered += n
 		if buffered < 2 {
 			if err != nil {
 				return nil, 0, err
@@ -68,24 +64,21 @@ func (state *connState) TryRx(isResponse bool) (pdu []byte, address uint8, err e
 	} else {
 		_, pdulen, err = peamodbus.InferRequestPacketLength(buf[state.dataStart+1 : state.dataEnd])
 	}
-
-	if err != nil && !errors.Is(err, peamodbus.ErrMissingPacketData) {
-		if errors.Is(err, peamodbus.ErrBadFunctionCode) {
-			state.closeErr = err // Close connection, probably desynced.
-		}
-		return nil, address, err
+	if errors.Is(err, peamodbus.ErrBadFunctionCode) {
+		state.closeErr = err // Close connection, probably desynced.
+		return nil, 0, err
 	}
-	missingData := int(pdulen) + 3 - buffered
-	n, err := state.port.Read(buf[state.dataEnd : state.dataEnd+missingData])
-	if n != 0 {
-		state.lastRxTime = time.Now()
-		state.dataEnd += n
-		if missingData > n {
-			return nil, 0, peamodbus.ErrMissingPacketData // Still missing data
-		}
+
+	missingData := int(pdulen) + 3 - state.buffered()
+	n, rxerr := state.read(missingData)
+	if rxerr != nil {
+		return nil, 0, rxerr
 	}
 	if err != nil {
 		return nil, 0, err
+	}
+	if missingData > n {
+		return nil, 0, peamodbus.ErrMissingPacketData // Still missing data
 	}
 
 	// Gotten to this point we have a complete Address+PDU+Checksum packet.
@@ -93,10 +86,29 @@ func (state *connState) TryRx(isResponse bool) (pdu []byte, address uint8, err e
 	packet := buf[state.dataStart : state.dataStart+int(pdulen)+3]
 	// Check CRC.
 	crc := generateCRC(packet[:len(packet)-2])
-	if binary.BigEndian.Uint16(packet[len(packet)-2:]) != crc {
+	gotcrc := binary.LittleEndian.Uint16(packet[len(packet)-2:])
+	if gotcrc != crc {
 		return nil, address, errBadCRC
 	}
 	return packet[1 : len(packet)-2], address, nil
+}
+
+func (cs *connState) read(upTo int) (n int, err error) {
+	if upTo > len(cs.rxbuf)-cs.dataEnd {
+		return 0, errors.New("read overflow")
+	}
+	n, err = cs.port.Read(cs.rxbuf[cs.dataEnd : cs.dataEnd+upTo])
+	if n != 0 {
+		cs.lastRxTime = time.Now()
+		cs.dataEnd += n
+	}
+	return n, err
+}
+
+func (cs *connState) buffered() int { return cs.dataEnd - cs.dataStart }
+
+func (cs *connState) rxBytes() []byte {
+	return cs.rxbuf[cs.dataStart:cs.dataEnd]
 }
 
 // Err returns the error responsible for a closed connection. The wrapped chain of errors
@@ -162,6 +174,29 @@ func (cs *connState) callbacks() (peamodbus.RxCallbacks, peamodbus.TxCallbacks) 
 			OnData: cs.dataAccessHandler,
 			// See dataHandler method on cs.
 			OnDataLong: cs.dataRequestHandler,
+			OnUnhandled: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
+				fmt.Printf("got unhandled function code %d\n", fc)
+				return nil
+			},
+		}, peamodbus.TxCallbacks{
+			OnError: nil,
+		}
+}
+
+func (cs *connState) callbacksClient() (peamodbus.RxCallbacks, peamodbus.TxCallbacks) {
+	return peamodbus.RxCallbacks{
+			OnError: func(rx *peamodbus.Rx, err error) {
+				println(err.Error())
+			},
+			OnException: func(rx *peamodbus.Rx, exceptCode peamodbus.Exception) error {
+				return exceptCode
+			},
+			OnData: cs.dataAccessHandler,
+			// See dataHandler method on cs.
+			OnDataLong: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
+				println("unhandled function code", fc.String())
+				return nil
+			},
 			OnUnhandled: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
 				fmt.Printf("got unhandled function code %d\n", fc)
 				return nil

@@ -72,7 +72,7 @@ func (sv *Server) HandleNext() (err error) {
 		return err
 	}
 
-	err = sv.rx.Receive(packet)
+	err = sv.rx.ReceiveRequest(packet)
 	if err != nil {
 		return err
 	}

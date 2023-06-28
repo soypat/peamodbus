@@ -127,7 +127,7 @@ func (sv *Server) HandleNext() error {
 	if err != nil {
 		return err
 	}
-	err = sv.rx.Receive(buf[:remaining])
+	err = sv.rx.ReceiveRequest(buf[:remaining])
 	if err != nil {
 		return err
 	}

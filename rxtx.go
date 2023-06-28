@@ -15,9 +15,13 @@ var (
 // InferRequestPacketLength returns the expected length of a client (master) request PDU in bytes
 // by looking at the function code as the first byte of the packet and the
 // contained data in the packet.
+//
+// If there is not enough data in the packet to infer the length of the packet then
+// InferResponsePacketLength returns ErrMissingPacketData and the number of bytes
+// needed to be able to infer the packet length while guaranteeing no over-reads.
 func InferRequestPacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
 	if len(b) < 1 {
-		return 0, 0, ErrMissingPacketData
+		return 0, 1, ErrMissingPacketData
 	}
 	fc = FunctionCode(b[0])
 	switch fc {
@@ -28,7 +32,7 @@ func InferRequestPacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
 		n = 1
 	case FCWriteMultipleCoils, FCWriteMultipleRegisters:
 		if len(b) < 6 {
-			return 0, 0, ErrMissingPacketData
+			return 0, uint16(6 - len(b)), ErrMissingPacketData
 		}
 		n = uint16(b[5])
 		if fc == FCWriteMultipleCoils && n%8 != 0 {
@@ -51,15 +55,19 @@ func InferRequestPacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
 // InferResponsePacketLength returns the expected length of a server (instrument) response PDU in bytes
 // by looking at the function code as the first byte of the response packet and the
 // contained data in the packet.
+//
+// If there is not enough data in the packet to infer the length of the packet then
+// InferResponsePacketLength returns ErrMissingPacketData and the number of bytes
+// needed to be able to infer the packet length.
 func InferResponsePacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
 	if len(b) < 1 {
-		return 0, 0, ErrMissingPacketData
+		return 0, 1, ErrMissingPacketData
 	}
 	fc = FunctionCode(b[0])
 	switch fc {
 	case FCReadCoils, FCReadDiscreteInputs:
 		if len(b) < 2 {
-			return 0, 0, ErrMissingPacketData
+			return 0, uint16(2 - len(b)), ErrMissingPacketData
 		}
 		n = uint16(b[1])
 		if n%8 != 0 {
@@ -69,7 +77,7 @@ func InferResponsePacketLength(b []byte) (fc FunctionCode, n uint16, err error) 
 
 	case FCReadHoldingRegisters, FCReadInputRegisters:
 		if len(b) < 2 {
-			return 0, 0, ErrMissingPacketData
+			return 0, uint16(2 - len(b)), ErrMissingPacketData
 		}
 		n = 2 + uint16(b[1])*2
 	case FCWriteSingleCoil, FCWriteSingleRegister, FCGetComEventCounter, FCWriteMultipleCoils, FCWriteMultipleRegisters:
@@ -78,12 +86,12 @@ func InferResponsePacketLength(b []byte) (fc FunctionCode, n uint16, err error) 
 		n = 2
 	case FCDiagnostic:
 		if len(b) < 2 {
-			return 0, 0, ErrMissingPacketData
+			return 0, uint16(2 - len(b)), ErrMissingPacketData
 		}
 		n = 3 + uint16(b[1])
 	case FCGetComEventLog:
 		if len(b) < 2 {
-			return 0, 0, ErrMissingPacketData
+			return 0, uint16(2 - len(b)), ErrMissingPacketData
 		}
 		n = 2 + uint16(b[1])
 
@@ -184,8 +192,50 @@ type RxCallbacks struct {
 	OnUnhandled func(rx *Rx, fc FunctionCode, buf []byte) error
 }
 
-func (rx *Rx) Receive(pdu []byte) (err error) {
-	if len(pdu) < 5 {
+func (rx *Rx) ReceiveResponse(pdu []byte) (err error) {
+	if len(pdu) < 2 {
+		return io.ErrShortBuffer
+	}
+	fc := FunctionCode(pdu[0])
+	rx.LastPendingRequest.FC = fc
+	switch fc {
+	case FCReadCoils, FCReadDiscreteInputs, FCReadHoldingRegisters, FCReadInputRegisters:
+		if len(pdu) < 2+int(pdu[1]) { // pdu[1] Always contains byte count.
+			return io.ErrShortBuffer
+		}
+		rx.LastPendingRequest.maybeAddr = 0
+		rx.LastPendingRequest.maybeValueQuantity = uint16(pdu[1])
+		isDiscrete := fc == FCReadCoils || fc == FCReadDiscreteInputs
+		if !isDiscrete {
+			rx.LastPendingRequest.maybeValueQuantity /= 2
+		}
+		if rx.RxCallbacks.OnDataLong != nil {
+			err = rx.RxCallbacks.OnDataLong(rx, fc, pdu[2:])
+		}
+
+	case FCWriteSingleCoil, FCWriteSingleRegister:
+		if len(pdu) < 5 {
+			return io.ErrShortBuffer
+		}
+		rx.LastPendingRequest.maybeAddr = binary.BigEndian.Uint16(pdu[1:])
+		rx.LastPendingRequest.maybeValueQuantity = binary.BigEndian.Uint16(pdu[3:])
+		if rx.RxCallbacks.OnData != nil {
+			err = rx.RxCallbacks.OnData(rx, rx.LastPendingRequest)
+		}
+
+	case FCReadExceptionStatus:
+		if rx.RxCallbacks.OnException != nil {
+			err = rx.RxCallbacks.OnException(rx, Exception(pdu[1]))
+		}
+	}
+	if err != nil {
+		rx.handleErr(err)
+	}
+	return err
+}
+
+func (rx *Rx) ReceiveRequest(pdu []byte) (err error) {
+	if len(pdu) < 2 {
 		return io.ErrShortBuffer
 	}
 	fc := FunctionCode(pdu[0])
@@ -194,6 +244,9 @@ func (rx *Rx) Receive(pdu []byte) (err error) {
 	// Request to read/write received.
 	case FCReadHoldingRegisters, FCReadInputRegisters, FCReadCoils, FCReadDiscreteInputs,
 		FCWriteSingleCoil, FCWriteSingleRegister:
+		if len(pdu) < 5 {
+			return io.ErrShortBuffer
+		}
 		rx.LastPendingRequest.FC = fc
 		rx.LastPendingRequest.maybeAddr = binary.BigEndian.Uint16(pdu[1:])
 		rx.LastPendingRequest.maybeValueQuantity = binary.BigEndian.Uint16(pdu[3:])
@@ -209,7 +262,7 @@ func (rx *Rx) Receive(pdu []byte) (err error) {
 
 	case FCReadExceptionStatus:
 		if rx.RxCallbacks.OnException != nil {
-			// err = rx.RxCallbacks.OnException(rx, fc)
+			err = rx.RxCallbacks.OnException(rx, Exception(pdu[1]))
 		}
 	default:
 		if rx.RxCallbacks.OnUnhandled != nil {
@@ -262,7 +315,7 @@ func (tx *Tx) ResponseReadInputRegisters(dst, registerData []byte) (int, error) 
 	if len(registerData)%2 != 0 {
 		return 0, errDataLengthMustBeMultipleOf2
 	}
-	ln := byte(len(registerData))
+	ln := byte(len(registerData)) / 2
 	return tx.writeSimpleU8(dst, FCReadInputRegisters, ln, registerData)
 }
 
@@ -270,7 +323,7 @@ func (tx *Tx) ResponseReadHoldingRegisters(dst, registerData []byte) (int, error
 	if len(registerData)%2 != 0 {
 		return 0, errDataLengthMustBeMultipleOf2
 	}
-	ln := byte(len(registerData))
+	ln := byte(len(registerData)) / 2
 	return tx.writeSimpleU8(dst, FCReadHoldingRegisters, ln, registerData)
 }
 

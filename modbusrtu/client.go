@@ -47,7 +47,7 @@ func (c *Client) ReadHoldingRegisters(devAddr uint8, regAddr uint16, regs []uint
 	}
 	c.txbuf[0] = devAddr
 	crc := generateCRC(c.txbuf[:n+1])
-	binary.BigEndian.PutUint16(c.txbuf[n+1:], crc)
+	binary.LittleEndian.PutUint16(c.txbuf[n+1:], crc)
 	_, err = c.state.port.Write(c.txbuf[:n+3])
 	if err != nil {
 		return err
@@ -72,7 +72,8 @@ func (c *Client) ReadHoldingRegisters(devAddr uint8, regAddr uint16, regs []uint
 	if devAddr != addr {
 		return errWrongAddress
 	}
-	err = c.rx.Receive(pdu)
+
+	err = c.rx.ReceiveRequest(pdu)
 	if err != nil {
 		return err
 	}

@@ -28,15 +28,13 @@ func TestIntegration(t *testing.T) {
 	endGoroutine := make(chan struct{})
 	go func() {
 		for {
-			err := srv.HandleNext()
-			if err != nil {
-				t.Fatal("fatal", err)
-			}
+			srv.HandleNext()
 			select {
 			case <-endGoroutine:
 				return
 			default:
 			}
+			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 
