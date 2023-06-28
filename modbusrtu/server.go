@@ -3,7 +3,6 @@ package modbusrtu
 import (
 	"errors"
 	"io"
-	"time"
 
 	"github.com/soypat/peamodbus"
 )
@@ -13,7 +12,7 @@ var ErrBadCRC = errors.New("bad CRC")
 type Server struct {
 	rx      peamodbus.Rx
 	tx      peamodbus.Tx
-	state   serverState
+	state   connState
 	address uint8
 }
 
@@ -40,7 +39,7 @@ func NewServer(port io.ReadWriter, cfg ServerConfig) *Server {
 	}
 	sv := &Server{
 		address: cfg.Address,
-		state: serverState{
+		state: connState{
 			closeErr: errors.New("not yet connected"),
 			data:     cfg.DataModel,
 			port:     port,
@@ -56,7 +55,7 @@ func (sv *Server) HandleNext() (err error) {
 	var packet []byte
 	var addr uint8
 	for {
-		packet, addr, err = sv.tryRx()
+		packet, addr, err = sv.state.TryRx()
 		if err != nil {
 			if errors.Is(err, peamodbus.ErrMissingPacketData) {
 				continue
@@ -77,43 +76,6 @@ func (sv *Server) HandleNext() (err error) {
 		return err
 	}
 	return sv.state.HandlePendingRequests(&sv.tx)
-}
-
-func (sv *Server) tryRx() (packet []byte, address uint8, err error) {
-	sv.state.murx.Lock()
-	defer sv.state.murx.Unlock()
-
-	buf := sv.state.rxbuf[:]
-	n, err := sv.state.port.Read(buf[sv.state.dataEnd:])
-	if n != 0 {
-		sv.state.lastRxTime = time.Now()
-	}
-	sv.state.dataEnd += n
-	if err != nil {
-		return nil, 0, err
-	} else if n == 0 && sv.state.dataEnd == sv.state.dataStart {
-		return nil, 0, peamodbus.ErrMissingPacketData // No data read.
-	}
-
-	var plen uint16
-	// Remove RTU/Serial address byte.
-	address = buf[sv.state.dataStart]
-	possiblePacket := buf[sv.state.dataStart+1 : sv.state.dataEnd]
-	_, plen, err = peamodbus.InferRequestPacketLength(possiblePacket)
-	if err != nil {
-		return nil, address, err
-	}
-	if len(possiblePacket) < int(plen) {
-		return nil, address, peamodbus.ErrMissingPacketData
-	}
-	packetStart := sv.state.dataStart
-	packetEnd := sv.state.dataStart + int(plen)
-	if packetEnd > 256 {
-		// Wrap around before overloading buffer. Next packet read will overwrite.
-		sv.state.resetRxBuf()
-	}
-	sv.state.dataStart = packetEnd
-	return buf[packetStart:packetEnd], address, nil
 }
 
 func generateCRC(b []byte) (crc uint16) {

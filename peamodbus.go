@@ -57,8 +57,10 @@ type DataModel interface {
 // differente modbus implementations.
 func readFromModel(dst []byte, model DataModel, fc FunctionCode, startAddress, quantity uint16) error {
 	bitSize := fc == FCReadCoils || fc == FCReadDiscreteInputs
-	endAddress := startAddress + quantity
+	endAddress := startAddress + quantity - 1
 	switch {
+	case quantity == 0:
+		return errors.New("quantity must be greater than 0")
 	case !bitSize && fc != FCReadHoldingRegisters && fc != FCReadInputRegisters:
 		return errors.New("unsupported ReadFromModel function code action")
 	case !bitSize && len(dst)%2 != 0:

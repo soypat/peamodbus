@@ -99,12 +99,12 @@ func (cs *serverState) callbacks() (peamodbus.RxCallbacks, peamodbus.TxCallbacks
 			OnError: func(rx *peamodbus.Rx, err error) {
 				cs.CloseConn(err)
 			},
-			OnException: func(rx *peamodbus.Rx, exceptCode uint8) error {
-				return fmt.Errorf("got exception with code %d", exceptCode)
+			OnException: func(rx *peamodbus.Rx, exceptCode peamodbus.Exception) error {
+				return exceptCode
 			},
-			OnDataModelRequest: cs.dataModelRequestHandler,
+			OnData: cs.dataModelRequestHandler,
 			// See dataHandler method on cs.
-			OnDataAccess: cs.dataRequestHandler,
+			OnDataLong: cs.dataRequestHandler,
 			OnUnhandled: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
 				fmt.Printf("got unhandled function code %d\n", fc)
 				return nil

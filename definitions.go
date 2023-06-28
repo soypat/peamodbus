@@ -1,5 +1,7 @@
 package peamodbus
 
+import "strconv"
+
 type FunctionCode uint8
 
 // Data access function codes.
@@ -92,6 +94,62 @@ func (fc FunctionCode) String() (s string) {
 		s = "read device identification"
 	default:
 		s = "unknown function code"
+	}
+	return s
+}
+
+// Exception represents a modbus Exception Code.
+// Appears as section 6.7 in the modbus specification.
+type Exception uint8
+
+const (
+	// The function code received in the query is not an allowable action for the slave.
+	// If a Poll Program Complete command was issued, this code indicates that no
+	// program function preceded it.
+	ExceptionIllegalFunction Exception = 1
+	//  The data address received in the query is not an allowable address for the slave.
+	ExceptionIllegalDataAddr Exception = 2
+	// A value contained in the query data field is not an allowable value for the slave.
+	ExceptionIllegalDataValue Exception = 3
+	// An unrecoverable error occurred while the slave was attempting to perform the requested action.
+	ExceptionDeviceFailure Exception = 4
+	// The slave has accepted the request and is processing it, but a long duration
+	//  of time will be required to do so. This response is returned to prevent a timeout
+	//  error from occurring in the master. The master can next issue a Poll Program
+	// Complete message to determine if processing is completed.
+	ExceptionAcknowledge Exception = 5
+	// The slave is engaged in processing a long–duration program command.
+	// The master should retransmit the message later when the slave is free.
+	ExceptionDeviceBusy Exception = 6
+	// The slave cannot perform the program function received in the query.
+	// This code is returned for an unsuccessful programming request using function
+	// code 13 or 14 decimal. The master should request diagnostic or error information from the slave
+	ExceptionNegativeAcknowledge Exception = 7
+	// The slave detected a parity error in the memory. The master can retry the request,
+	// but service may be required on the slave device.
+	ExceptionMemoryParityError Exception = 8
+)
+
+func (e Exception) Error() (s string) {
+	switch e {
+	case ExceptionIllegalFunction:
+		s = "illegal function"
+	case ExceptionIllegalDataAddr:
+		s = "illegal data address"
+	case ExceptionIllegalDataValue:
+		s = "illegal data value"
+	case ExceptionDeviceFailure:
+		s = "device failure"
+	case ExceptionAcknowledge:
+		s = "acknowledge"
+	case ExceptionDeviceBusy:
+		s = "device busy"
+	case ExceptionNegativeAcknowledge:
+		s = "negative acknowledge"
+	case ExceptionMemoryParityError:
+		s = "memory parity error"
+	default:
+		s = "unknown modbus exception " + strconv.Itoa(int(e))
 	}
 	return s
 }

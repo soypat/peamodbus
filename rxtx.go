@@ -7,7 +7,10 @@ import (
 	"io"
 )
 
-var ErrMissingPacketData = errors.New("missing packet data")
+var (
+	ErrMissingPacketData = errors.New("missing packet data")
+	ErrBadFunctionCode   = errors.New("bad function code")
+)
 
 // InferRequestPacketLength returns the expected length of a request packet in bytes
 // by looking at the function code as the first byte of the packet and the
@@ -39,12 +42,13 @@ func InferRequestPacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
 
 		fallthrough
 	default:
-		err = errors.New("unsupported function code: " + fc.String())
+		err = ErrBadFunctionCode
 	}
 
 	return fc, n, err
 }
 
+// Request is a client (master) request meant for a server (instrument).
 type Request struct {
 	FC FunctionCode
 	// First value usually contains Modbus address value.
@@ -117,41 +121,44 @@ type RxCallbacks struct {
 	// If this callback is set then it becomes the responsability of the callback
 	// to close the underlying transport.
 	OnError     func(rx *Rx, err error)
-	OnException func(rx *Rx, exceptCode uint8) error
-	// Called on all data structure access or modification function codes. May be any of the following:
+	OnException func(rx *Rx, except Exception) error
+
+	// Called on PDUs with function codes coming from a client that have undefined byte length.
+	// May be any of the following:
 	//  FCWriteMultipleRegisters, FCReadFileRecord,
 	//  FCWriteFileRecord, FCMaskWriteRegister, FCReadWriteMultipledRegisters, FCReadFIFOQueue:
-	OnDataAccess func(rx *Rx, fc FunctionCode, buf []byte) error
-	// Called on all DataModel access or modification function codes which require a response to
-	// be sent back to client. May be any of the following:
+	OnDataLong func(rx *Rx, fc FunctionCode, buf []byte) error
+
+	// Called on PDUs with function codes coming from a client that have defined byte length.
 	//  FCReadCoils, FCReadDiscreteInputs, FCReadHoldingRegister, FCReadInputRegister,
 	//  FCWriteSingleCoil, FCWriteSingleRegister
-	OnDataModelRequest func(rx *Rx, req Request) error
+	OnData func(rx *Rx, req Request) error
+
 	// Is called on unhandled function code packets received.
 	OnUnhandled func(rx *Rx, fc FunctionCode, buf []byte) error
 }
 
-func (rx *Rx) Receive(scratch []byte) (err error) {
-	if len(scratch) < 5 {
+func (rx *Rx) Receive(pdu []byte) (err error) {
+	if len(pdu) < 5 {
 		return io.ErrShortBuffer
 	}
-	fc := FunctionCode(scratch[0])
+	fc := FunctionCode(pdu[0])
 	switch fc {
 
 	// Request to read/write received.
 	case FCReadHoldingRegisters, FCReadInputRegisters, FCReadCoils, FCReadDiscreteInputs,
 		FCWriteSingleCoil, FCWriteSingleRegister:
 		rx.LastPendingRequest.FC = fc
-		rx.LastPendingRequest.maybeAddr = binary.BigEndian.Uint16(scratch[1:])
-		rx.LastPendingRequest.maybeValueQuantity = binary.BigEndian.Uint16(scratch[3:])
-		if rx.RxCallbacks.OnDataModelRequest != nil {
-			err = rx.RxCallbacks.OnDataModelRequest(rx, rx.LastPendingRequest)
+		rx.LastPendingRequest.maybeAddr = binary.BigEndian.Uint16(pdu[1:])
+		rx.LastPendingRequest.maybeValueQuantity = binary.BigEndian.Uint16(pdu[3:])
+		if rx.RxCallbacks.OnData != nil {
+			err = rx.RxCallbacks.OnData(rx, rx.LastPendingRequest)
 		}
 
 	case FCWriteMultipleRegisters, FCReadFileRecord,
 		FCWriteFileRecord, FCMaskWriteRegister, FCReadWriteMultipleRegisters, FCReadFIFOQueue:
-		if rx.RxCallbacks.OnDataAccess != nil {
-			err = rx.RxCallbacks.OnDataAccess(rx, fc, scratch[1:])
+		if rx.RxCallbacks.OnDataLong != nil {
+			err = rx.RxCallbacks.OnDataLong(rx, fc, pdu[1:])
 		}
 
 	case FCReadExceptionStatus:
@@ -160,7 +167,7 @@ func (rx *Rx) Receive(scratch []byte) (err error) {
 		}
 	default:
 		if rx.RxCallbacks.OnUnhandled != nil {
-			err = rx.RxCallbacks.OnUnhandled(rx, fc, scratch[1:])
+			err = rx.RxCallbacks.OnUnhandled(rx, fc, pdu[1:])
 		}
 	}
 	if err != nil {
