@@ -30,9 +30,7 @@ func TestIntegration(t *testing.T) {
 
 	var buf [125]uint16
 	for test := 0; test < numTests; test++ {
-		go func() {
-			srv.HandleNext()
-		}()
+		go srv.HandleNext()
 		err := cli.ReadHoldingRegisters(devAddr, startAddr, buf[:nRegs])
 		if err != nil {
 			t.Fatal(err)
