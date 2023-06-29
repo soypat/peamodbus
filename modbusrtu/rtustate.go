@@ -212,7 +212,7 @@ func (cs *connState) dataAccessHandler(rx *peamodbus.Rx, req peamodbus.Request) 
 		println("got invalid data model request", req.String())
 		return nil // ignore
 	}
-	println("got data model request", req.String())
+	// println("got data model request", req.String())
 	cs.NewPendingRequest(req)
 	return nil
 }

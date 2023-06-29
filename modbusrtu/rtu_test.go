@@ -10,6 +10,7 @@ import (
 
 func TestIntegration(t *testing.T) {
 	const (
+		numTests  = 100
 		devAddr   = 1
 		startAddr = 3
 		nRegs     = 1
@@ -26,20 +27,12 @@ func TestIntegration(t *testing.T) {
 	r2w1 := rw{label: "Server Pipe", Reader: r2, Writer: w1, t: t}
 	cli := NewClient(r1w2, 100*time.Millisecond)
 	srv := NewServer(r2w1, ServerConfig{Address: devAddr, DataModel: data})
-	endGoroutine := make(chan struct{})
-	go func() {
-		for {
-			srv.HandleNext()
-			select {
-			case <-endGoroutine:
-				return
-			default:
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-	}()
+
 	var buf [125]uint16
-	for test := 0; test < 10; test++ {
+	for test := 0; test < numTests; test++ {
+		go func() {
+			srv.HandleNext()
+		}()
 		err := cli.ReadHoldingRegisters(devAddr, startAddr, buf[:nRegs])
 		if err != nil {
 			t.Fatal(err)
@@ -50,9 +43,9 @@ func TestIntegration(t *testing.T) {
 				t.Fatalf("expected %v, got %v at %v", data.GetHoldingRegister(i), read, i)
 			}
 		}
+		t.Logf("========== TEST %d PASS ==========", test)
 	}
 
-	endGoroutine <- struct{}{}
 }
 
 type rw struct {
