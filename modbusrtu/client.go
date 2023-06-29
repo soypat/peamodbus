@@ -72,10 +72,15 @@ func (c *Client) ReadHoldingRegisters(devAddr uint8, regAddr uint16, regs []uint
 	if devAddr != addr {
 		return errWrongAddress
 	}
-
-	err = c.rx.ReceiveRequest(pdu)
+	pdu, err = peamodbus.ReceiveDataResponse(pdu)
 	if err != nil {
 		return err
+	}
+	if len(pdu) != len(regs)*2 {
+		return errors.New("wrong number of registers")
+	}
+	for i := range regs {
+		regs[i] = binary.BigEndian.Uint16(pdu[i*2:])
 	}
 	return nil
 }

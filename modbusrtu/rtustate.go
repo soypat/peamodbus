@@ -40,7 +40,7 @@ type connState struct {
 func (state *connState) TryRx(isResponse bool) (pdu []byte, address uint8, err error) {
 	state.murx.Lock()
 	defer state.murx.Unlock()
-	if state.dataEnd > 256 {
+	if state.dataEnd > 256 || state.buffered() == 0 {
 		// Wrap around before overloading buffer.
 		state.resetRxBuf()
 	}
@@ -87,6 +87,7 @@ func (state *connState) TryRx(isResponse bool) (pdu []byte, address uint8, err e
 	// Check CRC.
 	crc := generateCRC(packet[:len(packet)-2])
 	gotcrc := binary.LittleEndian.Uint16(packet[len(packet)-2:])
+	state.dataStart += len(packet)
 	if gotcrc != crc {
 		return nil, address, errBadCRC
 	}

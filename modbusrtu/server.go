@@ -53,10 +53,10 @@ func NewServer(port io.ReadWriter, cfg ServerConfig) *Server {
 // HandleNext reads the next message on the network and handles it automatically.
 // This call is blocking.
 func (sv *Server) HandleNext() (err error) {
-	var packet []byte
+	var pdu []byte
 	var addr uint8
 	for {
-		packet, addr, err = sv.state.TryRx(false)
+		pdu, addr, err = sv.state.TryRx(false)
 		if err != nil {
 			if errors.Is(err, peamodbus.ErrMissingPacketData) {
 				continue
@@ -72,7 +72,7 @@ func (sv *Server) HandleNext() (err error) {
 		return err
 	}
 
-	err = sv.rx.ReceiveRequest(packet)
+	err = sv.rx.ReceiveRequest(pdu)
 	if err != nil {
 		return err
 	}

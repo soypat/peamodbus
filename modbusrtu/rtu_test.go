@@ -11,7 +11,7 @@ import (
 func TestIntegration(t *testing.T) {
 	const (
 		devAddr   = 1
-		startAddr = 1
+		startAddr = 3
 		nRegs     = 1
 	)
 	data := peamodbus.ConcurrencySafeDataModel(&peamodbus.BlockedModel{})
@@ -19,11 +19,12 @@ func TestIntegration(t *testing.T) {
 		u16 := uint16(1) // generateCRC([]byte{byte(i), byte(i >> 8)})
 		data.SetHoldingRegister(i, u16)
 	}
+
 	r1, w1 := io.Pipe()
 	r2, w2 := io.Pipe()
 	r1w2 := rw{label: "Client Pipe", Reader: r1, Writer: w2, t: t}
 	r2w1 := rw{label: "Server Pipe", Reader: r2, Writer: w1, t: t}
-	cli := NewClient(r1w2, 100e9*time.Millisecond)
+	cli := NewClient(r1w2, 100*time.Millisecond)
 	srv := NewServer(r2w1, ServerConfig{Address: devAddr, DataModel: data})
 	endGoroutine := make(chan struct{})
 	go func() {
@@ -37,17 +38,20 @@ func TestIntegration(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}()
-
 	var buf [125]uint16
-	err := cli.ReadHoldingRegisters(devAddr, startAddr, buf[:nRegs])
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := startAddr; i < startAddr+nRegs; i++ {
-		if buf[i] != data.GetHoldingRegister(i) {
-			t.Fatalf("expected %v, got %v at %v", data.GetHoldingRegister(i), buf[i], i)
+	for test := 0; test < 10; test++ {
+		err := cli.ReadHoldingRegisters(devAddr, startAddr, buf[:nRegs])
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := startAddr; i < startAddr+nRegs; i++ {
+			read := buf[i-startAddr]
+			if read != data.GetHoldingRegister(i) {
+				t.Fatalf("expected %v, got %v at %v", data.GetHoldingRegister(i), read, i)
+			}
 		}
 	}
+
 	endGoroutine <- struct{}{}
 }
 

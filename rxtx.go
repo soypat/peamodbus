@@ -192,46 +192,44 @@ type RxCallbacks struct {
 	OnUnhandled func(rx *Rx, fc FunctionCode, buf []byte) error
 }
 
-func (rx *Rx) ReceiveResponse(pdu []byte) (err error) {
-	if len(pdu) < 2 {
-		return io.ErrShortBuffer
+// ReceiveSingleWriteResponse
+func ReceiveSingleWriteResponse(pdu []byte) (addr, value uint16, err error) {
+	if len(pdu) < 5 {
+		return 0, 0, io.ErrShortBuffer
 	}
 	fc := FunctionCode(pdu[0])
-	rx.LastPendingRequest.FC = fc
+	switch fc {
+	case FCWriteSingleCoil, FCWriteSingleRegister:
+		if len(pdu) < 5 {
+			return 0, 0, io.ErrShortBuffer
+		}
+		addr = binary.BigEndian.Uint16(pdu[1:])
+		value = binary.BigEndian.Uint16(pdu[3:])
+
+	default:
+		err = ErrBadFunctionCode
+	}
+	return addr, value, err
+}
+
+// ReceiveDataResponse decodes a response packet for any of the following packets:
+//
+//	FCReadCoils, FCReadDiscreteInputs, FCReadHoldingRegisters, FCReadInputRegisters
+func ReceiveDataResponse(pdu []byte) (data []byte, err error) {
+	if len(pdu) < 2 {
+		return nil, io.ErrShortBuffer
+	}
+	fc := FunctionCode(pdu[0])
 	switch fc {
 	case FCReadCoils, FCReadDiscreteInputs, FCReadHoldingRegisters, FCReadInputRegisters:
 		if len(pdu) < 2+int(pdu[1]) { // pdu[1] Always contains byte count.
-			return io.ErrShortBuffer
+			return nil, io.ErrShortBuffer
 		}
-		rx.LastPendingRequest.maybeAddr = 0
-		rx.LastPendingRequest.maybeValueQuantity = uint16(pdu[1])
-		isDiscrete := fc == FCReadCoils || fc == FCReadDiscreteInputs
-		if !isDiscrete {
-			rx.LastPendingRequest.maybeValueQuantity /= 2
-		}
-		if rx.RxCallbacks.OnDataLong != nil {
-			err = rx.RxCallbacks.OnDataLong(rx, fc, pdu[2:])
-		}
-
-	case FCWriteSingleCoil, FCWriteSingleRegister:
-		if len(pdu) < 5 {
-			return io.ErrShortBuffer
-		}
-		rx.LastPendingRequest.maybeAddr = binary.BigEndian.Uint16(pdu[1:])
-		rx.LastPendingRequest.maybeValueQuantity = binary.BigEndian.Uint16(pdu[3:])
-		if rx.RxCallbacks.OnData != nil {
-			err = rx.RxCallbacks.OnData(rx, rx.LastPendingRequest)
-		}
-
-	case FCReadExceptionStatus:
-		if rx.RxCallbacks.OnException != nil {
-			err = rx.RxCallbacks.OnException(rx, Exception(pdu[1]))
-		}
+		data = pdu[2:]
+	default:
+		err = ErrBadFunctionCode
 	}
-	if err != nil {
-		rx.handleErr(err)
-	}
-	return err
+	return data, err
 }
 
 func (rx *Rx) ReceiveRequest(pdu []byte) (err error) {
