@@ -40,7 +40,10 @@ func main() {
 			time.Sleep(time.Second)
 		} else {
 			for addr := 0; addr < 125; addr++ {
-				value := dataBank.GetHoldingRegister(addr)
+				value, exc := dataBank.GetHoldingRegister(addr)
+				if exc != 0 {
+					panic(exc.Error())
+				}
 				dataBank.SetHoldingRegister(addr, value+1)
 			}
 		}

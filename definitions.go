@@ -52,6 +52,7 @@ func (fc FunctionCode) IsRead() bool {
 		fc == FCReadFIFOQueue || fc == FCReadFileRecord
 }
 
+// String returns a human readable string representation of the function code.
 func (fc FunctionCode) String() (s string) {
 	switch fc {
 	case FCReadCoils:
@@ -93,7 +94,7 @@ func (fc FunctionCode) String() (s string) {
 	case FCReadDeviceIdentification:
 		s = "read device identification"
 	default:
-		s = "unknown function code"
+		s = "unknown function code (" + strconv.Itoa(int(fc)) + ")"
 	}
 	return s
 }
@@ -103,10 +104,12 @@ func (fc FunctionCode) String() (s string) {
 type Exception uint8
 
 const (
+	// ExceptionNone indicates no exception has ocurred.
+	ExceptionNone Exception = iota
 	// The function code received in the query is not an allowable action for the slave.
 	// If a Poll Program Complete command was issued, this code indicates that no
 	// program function preceded it.
-	ExceptionIllegalFunction Exception = 1 << iota
+	ExceptionIllegalFunction
 	//  The data address received in the query is not an allowable address for the slave.
 	ExceptionIllegalDataAddr
 	// A value contained in the query data field is not an allowable value for the slave.
@@ -131,15 +134,6 @@ const (
 )
 
 func (e Exception) Error() (s string) {
-	for i := 0; i < 8; i++ {
-		if e&(1<<i) != 0 {
-			s += e.bitString() + ";"
-		}
-	}
-	return s
-}
-
-func (e Exception) bitString() (s string) {
 	switch e {
 	case ExceptionIllegalFunction:
 		s = "illegal function"
@@ -157,6 +151,8 @@ func (e Exception) bitString() (s string) {
 		s = "negative acknowledge"
 	case ExceptionMemoryParityError:
 		s = "memory parity error"
+	case ExceptionNone:
+		s = "none"
 	default:
 		s = "unknown modbus exception " + strconv.Itoa(int(e))
 	}

@@ -31,7 +31,6 @@ package peamodbus
 
 import (
 	"encoding/binary"
-	"errors"
 	"sync"
 )
 
@@ -42,81 +41,99 @@ import (
 // An explicit representation of Modbus memory ([BlockedModel]) occupies a kilobyte,
 // This could be reduced to just 2 bytes for a controller that just operates a 16bit sensor.
 type DataModel interface {
-	GetCoil(i int) bool
-	SetCoil(i int, b bool)
-	GetDiscreteInput(i int) bool
-	SetDiscreteInput(i int, b bool)
-	GetInputRegister(i int) uint16
-	SetInputRegister(i int, value uint16)
-	GetHoldingRegister(i int) uint16
-	SetHoldingRegister(i int, value uint16)
+	GetCoil(i int) (bool, Exception)
+	SetCoil(i int, b bool) Exception
+	GetDiscreteInput(i int) (bool, Exception)
+	SetDiscreteInput(i int, b bool) Exception
+	GetInputRegister(i int) (uint16, Exception)
+	SetInputRegister(i int, value uint16) Exception
+	GetHoldingRegister(i int) (uint16, Exception)
+	SetHoldingRegister(i int, value uint16) Exception
 }
 
 // readFromModel reads data from the model into dst as per specified by fc, the start address and
 // the length of dst buffer. It is a low level primitive that receives raw modbus PDU data.
-func readFromModel(dst []byte, model DataModel, fc FunctionCode, startAddress, quantity uint16) error {
+func readFromModel(dst []byte, model DataModel, fc FunctionCode, startAddress, quantity uint16) (exc Exception) {
 	bitSize := fc == FCReadCoils || fc == FCReadDiscreteInputs
 	endAddress := startAddress + quantity - 1
 	switch {
 	case quantity == 0:
-		return errors.New("quantity must be greater than 0")
+		exc = ExceptionIllegalDataValue
 	case !bitSize && fc != FCReadHoldingRegisters && fc != FCReadInputRegisters:
-		return errors.New("unsupported ReadFromModel function code action")
+		exc = ExceptionIllegalFunction
 	case !bitSize && len(dst)%2 != 0:
-		return errors.New("uneven number of bytes in dst")
+		exc = ExceptionIllegalDataValue
+		// return errors.New("uneven number of bytes in dst")
 	case endAddress > 2000 || (!bitSize && endAddress >= 125):
-		return errors.New("read request exceeds model's size")
+		exc = ExceptionIllegalDataAddr
+		// return errors.New("read request exceeds model's size")
 	}
-	for i := uint16(0); i < quantity; i++ {
+	var gotu16 uint16
+	var gotb bool
+	for i := uint16(0); exc == ExceptionNone && i < quantity; i++ {
 		ireg := startAddress + i
 		switch fc {
 		case FCReadHoldingRegisters:
-			binary.BigEndian.PutUint16(dst[2*i:], model.GetHoldingRegister(int(ireg)))
+			gotu16, exc = model.GetHoldingRegister(int(ireg))
+			if exc != ExceptionNone {
+				break
+			}
+			binary.BigEndian.PutUint16(dst[2*i:], gotu16)
 		case FCReadInputRegisters:
-			binary.BigEndian.PutUint16(dst[2*i:], model.GetInputRegister(int(ireg)))
+			gotu16, exc = model.GetInputRegister(int(ireg))
+			if exc != ExceptionNone {
+				break
+			}
+			binary.BigEndian.PutUint16(dst[2*i:], gotu16)
 		case FCReadCoils:
-			if model.GetCoil(int(ireg)) {
+			gotb, exc = model.GetCoil(int(ireg))
+			if exc != ExceptionNone {
+				break
+			}
+			if gotb {
 				dst[i/8] |= (1 << (i % 8)) // Set bit.
 			} else {
 				dst[i/8] &^= (1 << (i % 8)) // Unset bit.
 			}
 		case FCReadDiscreteInputs:
-			if model.GetDiscreteInput(int(ireg)) {
+			gotb, exc = model.GetDiscreteInput(int(ireg))
+			if exc != ExceptionNone {
+				break
+			}
+			if gotb {
 				dst[i/8] |= (1 << (i % 8))
 			} else {
 				dst[i/8] &^= (1 << (i % 8))
 			}
 		}
-		ireg++
 	}
-	return nil
+	return exc
 }
 
 // writeToModel implements the low level API for modifying the Object Model's data
 // using PDU data obtained directly from a modbus transaction.
-func writeToModel(model DataModel, fc FunctionCode, startAddress, quantity uint16, data []byte) error {
+func writeToModel(model DataModel, fc FunctionCode, startAddress, quantity uint16, data []byte) (exc Exception) {
 	bitSize := fc == FCWriteSingleCoil || fc == FCWriteMultipleCoils
 	endAddress := startAddress + quantity
 	switch {
 	case !bitSize && fc != FCWriteSingleRegister && fc != FCWriteMultipleRegisters:
-		return errors.New("unsupported WriteToModel function code action")
+		exc = ExceptionIllegalFunction
 	case endAddress > 2000 || (!bitSize && endAddress >= 125):
-		return errors.New("write request exceeds model's size")
+		exc = ExceptionIllegalDataAddr
 	case quantity != 1 && (fc == FCWriteSingleCoil || fc == FCWriteSingleRegister):
-		return errors.New("quantity must be 1 for reading single coil or single register")
+		exc = ExceptionIllegalDataValue
 	}
-
-	for i := uint16(0); i < quantity; i++ {
+	for i := uint16(0); exc == ExceptionNone && i < quantity; i++ {
 		ireg := i + startAddress
 		switch fc { // TODO(soypat): Benchmark to see if using an `if bitsize` is faster.
 		case FCWriteMultipleRegisters, FCWriteSingleRegister:
-			model.SetHoldingRegister(int(ireg), binary.BigEndian.Uint16(data[i*2:]))
+			exc = model.SetHoldingRegister(int(ireg), binary.BigEndian.Uint16(data[i*2:]))
 		case FCWriteSingleCoil, FCWriteMultipleCoils:
 			bit := data[i/8] & (1 << (i % 8))
-			model.SetCoil(int(ireg), bit != 0)
+			exc = model.SetCoil(int(ireg), bit != 0)
 		}
 	}
-	return nil
+	return exc
 }
 
 // BlockedModel is a memory constrained DataModel implementation.
@@ -134,37 +151,51 @@ type BlockedModel struct {
 
 var _ DataModel = &BlockedModel{}
 
-func (dm *BlockedModel) GetHoldingRegister(i int) uint16 {
-	return dm.holdingRegisters[i]
+func (dm *BlockedModel) GetHoldingRegister(i int) (uint16, Exception) {
+	if i < 0 || i >= 125 {
+		return 0, ExceptionIllegalDataAddr
+	}
+	return dm.holdingRegisters[i], ExceptionNone
 }
 
-func (dm *BlockedModel) SetHoldingRegister(i int, v uint16) {
+func (dm *BlockedModel) SetHoldingRegister(i int, v uint16) Exception {
+	if i < 0 || i >= 125 {
+		return ExceptionIllegalDataAddr
+	}
 	dm.holdingRegisters[i] = v
+	return ExceptionNone
 }
 
-func (dm *BlockedModel) GetInputRegister(i int) uint16 {
-	return dm.inputRegisters[i]
+func (dm *BlockedModel) GetInputRegister(i int) (uint16, Exception) {
+	if i < 0 || i >= 125 {
+		return 0, ExceptionIllegalDataAddr
+	}
+	return dm.inputRegisters[i], ExceptionNone
 }
 
-func (dm *BlockedModel) SetInputRegister(i int, v uint16) {
+func (dm *BlockedModel) SetInputRegister(i int, v uint16) Exception {
+	if i < 0 || i >= 125 {
+		return ExceptionIllegalDataAddr
+	}
 	dm.inputRegisters[i] = v
+	return ExceptionNone
 }
 
 // GetCoil returns 1 if the coil at position i is set and 0 if it is not.
 // Expects coil index in range 0..2000.
-func (sm *BlockedModel) GetCoil(i int) bool {
-	if i >= 2000 {
-		panic("coil exceeds limit")
+func (sm *BlockedModel) GetCoil(i int) (bool, Exception) {
+	if i < 0 || i >= 2000 {
+		return false, ExceptionIllegalDataAddr
 	}
 	idx, bit := i/16, i%16
-	return sm.coils[idx]&(1<<bit) != 0
+	return sm.coils[idx]&(1<<bit) != 0, ExceptionNone
 }
 
 // SetCoil sets the coil at position i to 1 if value is true and to 0 if value is false.
 // Expects coil index in range 0..2000.
-func (sm *BlockedModel) SetCoil(i int, value bool) {
-	if i >= 2000 {
-		panic("coil exceeds limit")
+func (sm *BlockedModel) SetCoil(i int, value bool) Exception {
+	if i < 0 || i >= 2000 {
+		return ExceptionIllegalDataAddr
 	}
 	idx, bit := i/16, i%16
 	if value {
@@ -172,23 +203,24 @@ func (sm *BlockedModel) SetCoil(i int, value bool) {
 	} else {
 		sm.coils[idx] &^= (1 << bit)
 	}
+	return ExceptionNone
 }
 
 // GetDiscreteInput returns 1 if the discrete input at position i is set and 0 if it is not.
 // Expects discrete input index in range 0..2000.
-func (sm *BlockedModel) GetDiscreteInput(i int) bool {
-	if i >= 2000 {
-		panic("discrete input exceeds limit")
+func (sm *BlockedModel) GetDiscreteInput(i int) (bool, Exception) {
+	if i < 0 || i >= 2000 {
+		return false, ExceptionIllegalDataAddr
 	}
 	idx, bit := i/16, i%16
-	return sm.discreteInputs[idx]&(1<<bit) != 0
+	return sm.discreteInputs[idx]&(1<<bit) != 0, ExceptionNone
 }
 
 // SetDiscreteInput sets the discrete input at position i to 1 if value is true and 0 if it is false.
 // Expects discrete input index in range 0..2000.
-func (sm *BlockedModel) SetDiscreteInput(i int, value bool) {
-	if i >= 2000 {
-		panic("discrete input exceeds limit")
+func (sm *BlockedModel) SetDiscreteInput(i int, value bool) Exception {
+	if i < 0 || i >= 2000 {
+		return ExceptionIllegalDataAddr
 	}
 	idx, bit := i/16, i%16
 	if value {
@@ -196,6 +228,7 @@ func (sm *BlockedModel) SetDiscreteInput(i int, value bool) {
 	} else {
 		sm.discreteInputs[idx] &^= (1 << bit)
 	}
+	return ExceptionNone
 }
 
 // ConcurrencySafeDataModel returns a DataModel that is safe for concurrent use
@@ -214,50 +247,50 @@ type lockedDataModel struct {
 	dm DataModel
 }
 
-func (dm *lockedDataModel) GetHoldingRegister(i int) uint16 {
+func (dm *lockedDataModel) GetHoldingRegister(i int) (uint16, Exception) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	return dm.dm.GetHoldingRegister(i)
 }
 
-func (dm *lockedDataModel) SetHoldingRegister(i int, v uint16) {
+func (dm *lockedDataModel) SetHoldingRegister(i int, v uint16) Exception {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
-	dm.dm.SetHoldingRegister(i, v)
+	return dm.dm.SetHoldingRegister(i, v)
 }
 
-func (dm *lockedDataModel) GetInputRegister(i int) uint16 {
+func (dm *lockedDataModel) GetInputRegister(i int) (uint16, Exception) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	return dm.dm.GetInputRegister(i)
 }
 
-func (dm *lockedDataModel) SetInputRegister(i int, v uint16) {
+func (dm *lockedDataModel) SetInputRegister(i int, v uint16) Exception {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
-	dm.dm.SetInputRegister(i, v)
+	return dm.dm.SetInputRegister(i, v)
 }
 
-func (dm *lockedDataModel) GetCoil(i int) bool {
+func (dm *lockedDataModel) GetCoil(i int) (bool, Exception) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	return dm.dm.GetCoil(i)
 }
 
-func (dm *lockedDataModel) SetCoil(i int, v bool) {
+func (dm *lockedDataModel) SetCoil(i int, v bool) Exception {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
-	dm.dm.SetCoil(i, v)
+	return dm.dm.SetCoil(i, v)
 }
 
-func (dm *lockedDataModel) GetDiscreteInput(i int) bool {
+func (dm *lockedDataModel) GetDiscreteInput(i int) (bool, Exception) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	return dm.dm.GetDiscreteInput(i)
 }
 
-func (dm *lockedDataModel) SetDiscreteInput(i int, v bool) {
+func (dm *lockedDataModel) SetDiscreteInput(i int, v bool) Exception {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
-	dm.dm.SetDiscreteInput(i, v)
+	return dm.dm.SetDiscreteInput(i, v)
 }

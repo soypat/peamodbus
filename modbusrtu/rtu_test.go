@@ -25,7 +25,8 @@ func TestIntegration(t *testing.T) {
 	r2, w2 := io.Pipe()
 	r1w2 := rw{label: "Client Pipe", Reader: r1, Writer: w2, t: t}
 	r2w1 := rw{label: "Server Pipe", Reader: r2, Writer: w1, t: t}
-	cli := NewClient(r1w2, 100*time.Millisecond)
+	cli := NewClient(ClientConfig{RxTimeout: 200 * time.Millisecond})
+	cli.SetTransport(r1w2)
 	srv := NewServer(r2w1, ServerConfig{Address: devAddr, DataModel: data})
 
 	var buf [125]uint16
@@ -37,8 +38,8 @@ func TestIntegration(t *testing.T) {
 		}
 		for i := startAddr; i < startAddr+nRegs; i++ {
 			read := buf[i-startAddr]
-			if read != data.GetHoldingRegister(i) {
-				t.Fatalf("expected %v, got %v at %v", data.GetHoldingRegister(i), read, i)
+			if got, exc := data.GetHoldingRegister(i); got != read {
+				t.Fatalf("expected %v, got %v at %v (exception=%q)", got, read, i, exc.Error())
 			}
 		}
 		t.Logf("========== TEST %d PASS ==========", test)

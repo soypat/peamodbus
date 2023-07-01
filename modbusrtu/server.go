@@ -78,28 +78,3 @@ func (sv *Server) HandleNext() (err error) {
 	}
 	return sv.state.HandlePendingRequests(&sv.tx)
 }
-
-func generateCRC(b []byte) (crc uint16) {
-	const (
-		startCRC = 0xFFFF
-		xorCRC   = 0xA001
-	)
-	crc = startCRC
-	for i := 0; i < len(b); i++ {
-		crc ^= uint16(b[i])
-		for n := 0; n < 8; n++ {
-			crc >>= 1
-			if crc&1 != 0 {
-				crc ^= xorCRC
-			}
-		}
-	}
-	return crc
-}
-
-func generateLRC(b []byte) (lrc uint8) {
-	for i := 0; i < len(b); i++ {
-		lrc += b[i]
-	}
-	return uint8(-int8(lrc)) // This is how you take two's complement in Go.
-}

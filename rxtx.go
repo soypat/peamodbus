@@ -131,14 +131,22 @@ func (req *Request) PutResponse(tx *Tx, model DataModel, dst, scratch []byte) (p
 		return 0, io.ErrShortBuffer
 	}
 	address := req.maybeAddr
-	if fc == FCWriteSingleRegister || fc == FCWriteSingleCoil {
+	var exc Exception
+	switch {
+	case fc == FCWriteSingleRegister || fc == FCWriteSingleCoil:
 		binary.BigEndian.PutUint16(scratch[:2], quantityBytes)
-		err = writeToModel(model, fc, address, 1, scratch[:2])
-	} else {
-		err = readFromModel(scratch[:quantityBytes], model, fc, address, req.maybeValueQuantity)
+		exc = writeToModel(model, fc, address, 1, scratch[:2])
+
+	case fc == FCWriteMultipleCoils || fc == FCWriteMultipleRegisters:
+		exc = writeToModel(model, fc, address, req.maybeValueQuantity, scratch[:quantityBytes])
+	case fc.IsRead():
+		exc = readFromModel(scratch[:quantityBytes], model, fc, address, req.maybeValueQuantity)
+	default: // All read functions:
+		return 0, fmt.Errorf("unhandled function code %q", fc.String())
 	}
-	if err != nil {
-		return 0, fmt.Errorf("handling fc=%q accessing data model: %w", fc, err)
+
+	if exc != ExceptionNone {
+		return 0, fmt.Errorf("handling fc=%q accessing data model: %w", fc, exc)
 	}
 
 	switch fc {
@@ -300,11 +308,92 @@ func NewTx() *Tx {
 	return &tx
 }
 
+var (
+	errDiscreteOOB = errors.New("discrete address inputs/coils out of bounds (0..0xffff) or too many (1..2000)")
+	errRegisterOOB = errors.New("register address out of bounds (0..0xffff) or too many (1..125)")
+)
+
+// RequestReadCoils writes packet to dst used to read from 1 to 2000 contiguous status of coils in a remote device.
+// startAddr must be in 0x0000..0xFFFF. quantityOfCoils must be in 1..2000.
+func (tx *Tx) RequestReadCoils(dst []byte, startAddr, quantityOfCoils uint16) (int, error) {
+	if quantityOfCoils > 2000 || quantityOfCoils == 0 {
+		return 0, errDiscreteOOB
+	}
+	return tx.writeSimple2U16(dst, FCReadCoils, startAddr, quantityOfCoils, nil)
+}
+
+func (tx *Tx) RequestReadDiscreteInputs(dst []byte, startAddr, quantityOfInputs uint16) (int, error) {
+	if quantityOfInputs > 2000 || quantityOfInputs == 0 {
+		return 0, errDiscreteOOB
+	}
+	return tx.writeSimple2U16(dst, FCReadDiscreteInputs, startAddr, quantityOfInputs, nil)
+}
+
+// RequestReadDiscreteInputs writes packet to dst used to read from 1 to 125 contiguous holding registers.
 func (tx *Tx) RequestReadHoldingRegisters(dst []byte, startAddr, numberOfRegisters uint16) (int, error) {
-	var buf [4]byte
-	binary.BigEndian.PutUint16(buf[:2], startAddr)
-	binary.BigEndian.PutUint16(buf[2:4], numberOfRegisters)
-	return tx.writeSimple(dst, FCReadHoldingRegisters, buf[:4])
+	if numberOfRegisters > 125 || numberOfRegisters == 0 {
+		return 0, errRegisterOOB
+	}
+	return tx.writeSimple2U16(dst, FCReadHoldingRegisters, startAddr, numberOfRegisters, nil)
+}
+
+// RequestReadInputRegisters writes packet to dst used to read from 1 to 125 contiguous input registers in a remote device.
+func (tx *Tx) RequestReadInputRegisters(dst []byte, startAddr, numberOfRegisters uint16) (int, error) {
+	if numberOfRegisters > 125 || numberOfRegisters == 0 {
+		return 0, errRegisterOOB
+	}
+	return tx.writeSimple2U16(dst, FCReadInputRegisters, startAddr, numberOfRegisters, nil)
+}
+
+// RequestWriteSingleCoil writes packet to dst used to write a single coil to either ON or OFF in a remote device.
+func (tx *Tx) RequestWriteSingleCoil(dst []byte, addr uint16, value bool) (int, error) {
+	var v uint16
+	if value {
+		v = 0xff00
+	}
+	return tx.writeSimple2U16(dst, FCWriteSingleCoil, addr, v, nil)
+}
+
+// RequestWriteSingleRegister writes packet to dst used to write a single holding register in a remote device.
+func (tx *Tx) RequestWriteSingleRegister(dst []byte, addr, value uint16) (int, error) {
+	return tx.writeSimple2U16(dst, FCWriteSingleRegister, addr, value, nil)
+}
+
+// RequestWriteMultipleCoils writes packet to dst used to force contiguous coils to either ON or OFF in a remote device.
+// The data argument contains packed coil values.
+func (tx *Tx) RequestWriteMultipleCoils(dst []byte, startAddr, quantityOfOutputs uint16, data []byte) (int, error) {
+	ln := len(data)
+	if len(data) < 1 || len(data) > 250 || quantityOfOutputs > 2000 || quantityOfOutputs == 0 || quantityOfOutputs > uint16(ln*8) {
+		return 0, errDiscreteOOB
+	}
+	if len(dst) < 6+ln {
+		return 0, errResponseTooLargeTx
+	}
+	dst[0] = byte(FCWriteMultipleCoils)
+	binary.BigEndian.PutUint16(dst[1:], startAddr)
+	binary.BigEndian.PutUint16(dst[3:], quantityOfOutputs)
+	dst[5] = byte(ln)
+	copy(dst[6:], data)
+	return 6 + ln, nil
+}
+
+// RequestWriteMultipleRegisters writes packet to dst used to write contiguous block of holding registers (1 to 123 registers) in a remote device.
+func (tx *Tx) RequestWriteMultipleRegisters(dst []byte, startAddr uint16, registers []uint16) (int, error) {
+	if len(registers) < 1 || len(registers) > 123 {
+		return 0, errRegisterOOB
+	}
+	if len(dst) < 6+len(registers)*2 {
+		return 0, errResponseTooLargeTx
+	}
+	dst[0] = byte(FCWriteMultipleRegisters)
+	binary.BigEndian.PutUint16(dst[1:], startAddr)
+	binary.BigEndian.PutUint16(dst[3:], uint16(len(registers)))
+	NBytes := len(registers) * 2
+	dst[5] = byte(NBytes)
+	for i, r := range registers {
+		binary.BigEndian.PutUint16(dst[6+i*2:], r)
+	}
+	return 6 + NBytes, nil
 }
 
 var errDataLengthMustBeMultipleOf2 = errors.New("data length must be multiple of 2")
@@ -347,7 +436,7 @@ func (tx *Tx) ResponseReadDiscreteInput(dst, registerData []byte) (int, error) {
 	return tx.writeSimpleU8(dst, FCReadDiscreteInputs, ln, registerData)
 }
 
-var errResponseTooLargeTx = errors.New("response data too large for tx buffer")
+var errResponseTooLargeTx = errors.New("response/request data too large for tx buffer")
 
 func (tx *Tx) writeSimple(dst []byte, fc FunctionCode, responseData []byte) (int, error) {
 	if len(responseData) > len(dst)-1 {
