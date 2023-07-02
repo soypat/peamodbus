@@ -11,8 +11,7 @@ import (
 )
 
 var (
-	errTimeout      = errors.New("timeout waiting for rx")
-	errWrongAddress = errors.New("wrong address")
+	errTimeout = errors.New("timeout waiting for rx")
 )
 
 type Client struct {
@@ -124,7 +123,7 @@ func (c *Client) transaction(rxFCFilter peamodbus.FunctionCode, addrFilter uint8
 
 	for time.Until(deadline) > 0 && errcount < 5 {
 		pdu, addr, err = c.state.TryRx(true)
-		if err == nil && len(pdu) > 1 && // All Modbus response PDUs are greater-equal than 2 bytes.
+		if len(pdu) > 1 && // All Modbus response PDUs are greater-equal than 2 bytes.
 			(addrFilter == 0 || addrFilter == addr) && // Address filtering.
 			(rxFCFilter == 0 || rxFCFilter == peamodbus.FunctionCode(pdu[0])) { // Function code filtering.
 			break
@@ -138,7 +137,7 @@ func (c *Client) transaction(rxFCFilter peamodbus.FunctionCode, addrFilter uint8
 	}
 	switch {
 	case err != nil:
-		return nil, 0, err // IO error or CRC fail.
+		return pdu, 0, err // IO error or CRC fail.
 
 	case pdu == nil:
 		return nil, 0, errTimeout

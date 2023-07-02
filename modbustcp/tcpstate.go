@@ -1,7 +1,6 @@
 package modbustcp
 
 import (
-	"fmt"
 	"net"
 	"sync"
 
@@ -106,7 +105,7 @@ func (cs *serverState) callbacks() (peamodbus.RxCallbacks, peamodbus.TxCallbacks
 			// See dataHandler method on cs.
 			OnDataLong: cs.dataRequestHandler,
 			OnUnhandled: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
-				fmt.Printf("got unhandled function code %d\n", fc)
+				println("got unhandled function code", fc.String())
 				return nil
 			},
 		}, peamodbus.TxCallbacks{
@@ -117,12 +116,12 @@ func (cs *serverState) callbacks() (peamodbus.RxCallbacks, peamodbus.TxCallbacks
 }
 
 func (cs *serverState) dataModelRequestHandler(rx *peamodbus.Rx, req peamodbus.Request) error {
-	fmt.Println("got data model request", req, cs.lastMBAP)
+	println("got data model request", req.String())
 	cs.NewPendingRequest(request{transaction: cs.lastMBAP.Transaction, unit: cs.lastMBAP.Unit, req: req})
 	return nil
 }
 
 func (cs *serverState) dataRequestHandler(rx *peamodbus.Rx, fc peamodbus.FunctionCode, data []byte) (err error) {
-	fmt.Println("unhandled function code", fc)
+	println("got data request", fc.String())
 	return nil
 }

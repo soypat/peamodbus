@@ -94,13 +94,18 @@ func (fc FunctionCode) String() (s string) {
 	case FCReadDeviceIdentification:
 		s = "read device identification"
 	default:
-		s = "unknown function code (" + strconv.Itoa(int(fc)) + ")"
+		if fc7bits := fc &^ 0x80; fc7bits != fc && (fc7bits.IsRead() || fc7bits.IsWrite()) {
+			s = "exception!<" + fc7bits.String() + ">"
+		} else {
+			s = "unknown function code (" + strconv.Itoa(int(fc)) + ")"
+		}
 	}
 	return s
 }
 
 // Exception represents a modbus Exception Code.
 // Appears as section 6.7 in the modbus specification.
+// A Value of 0 is equivalent to no exception.
 type Exception uint8
 
 const (

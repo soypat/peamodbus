@@ -2,8 +2,8 @@ package modbusrtu
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -13,8 +13,16 @@ import (
 
 var (
 	errYetToConnect = errors.New("yet to connect")
-	errBadCRC       = errors.New("bad CRC")
 )
+
+// CRCError is returned when the CRC of a packet is wrong.
+type CRCError struct {
+	Packet []byte
+}
+
+func (e CRCError) Error() string {
+	return "bad CRC:\n" + hex.Dump(e.Packet)
+}
 
 // connState stores the persisting state of a websocket server connection.
 // Since this state is shared between frames it is protected by a mutex so that
@@ -37,6 +45,10 @@ type connState struct {
 	rxbuf      [512]byte
 }
 
+// TryRx tries to read a complete packet from the connection. If the packet is
+// not complete, it returns ErrMissingPacketData. The PDU is returned excluding the
+// address byte and the CRC. In the case the CRC is wrong CRCError is returned
+// along with the whole packet in it's Packet field.
 func (state *connState) TryRx(isResponse bool) (pdu []byte, address uint8, err error) {
 	state.murx.Lock()
 	defer state.murx.Unlock()
@@ -89,9 +101,9 @@ func (state *connState) TryRx(isResponse bool) (pdu []byte, address uint8, err e
 	gotcrc := binary.LittleEndian.Uint16(packet[len(packet)-2:])
 	state.dataStart += len(packet)
 	if gotcrc != crc {
-		return nil, address, errBadCRC
+		err = CRCError{Packet: packet}
 	}
-	return packet[1 : len(packet)-2], address, nil
+	return packet[1 : len(packet)-2], address, err
 }
 
 func (cs *connState) read(upTo int) (n int, err error) {
@@ -129,9 +141,10 @@ func (cs *connState) ResetRxBuf() {
 }
 
 func (cs *connState) resetRxBuf() {
-	if cs.dataStart != cs.dataEnd {
+	if cs.dataStart != cs.dataEnd && cs.buffered() < 256 {
 		cs.dataEnd = copy(cs.rxbuf[:], cs.rxbuf[cs.dataStart:cs.dataEnd])
 	} else {
+		// We either overflowed our buffer or dataEnd==dataStart.
 		cs.dataEnd = 0
 	}
 	cs.dataStart = 0
@@ -176,7 +189,7 @@ func (cs *connState) callbacks() (peamodbus.RxCallbacks, peamodbus.TxCallbacks) 
 			// See dataHandler method on cs.
 			OnDataLong: cs.dataRequestHandler,
 			OnUnhandled: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
-				fmt.Printf("got unhandled function code %d\n", fc)
+				println("got unhandled function code ", fc.String())
 				return nil
 			},
 		}, peamodbus.TxCallbacks{
@@ -199,7 +212,7 @@ func (cs *connState) callbacksClient() (peamodbus.RxCallbacks, peamodbus.TxCallb
 				return nil
 			},
 			OnUnhandled: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
-				fmt.Printf("got unhandled function code %d\n", fc)
+				println("unhandled function code", fc.String())
 				return nil
 			},
 		}, peamodbus.TxCallbacks{

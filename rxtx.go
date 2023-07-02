@@ -3,8 +3,8 @@ package peamodbus
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
+	"strconv"
 )
 
 var (
@@ -112,10 +112,12 @@ type Request struct {
 }
 
 func (req Request) String() string {
+	var quantityOrValue string = ", Quantity"
 	if req.FC.IsWrite() {
-		return fmt.Sprintf("request to %s @ Addr: %d, Value: %d", req.FC, req.maybeAddr, req.maybeValueQuantity)
+		quantityOrValue = ", Value"
+
 	}
-	return fmt.Sprintf("request to %s @ Addr: %d, Quantity: %d", req.FC, req.maybeAddr, req.maybeValueQuantity)
+	return "request to " + req.FC.String() + " @ Addr: " + strconv.Itoa(int(req.maybeAddr)) + quantityOrValue + strconv.Itoa(int(req.maybeValueQuantity))
 }
 
 // PutResponse generates a response packet for the request.
@@ -142,11 +144,11 @@ func (req *Request) PutResponse(tx *Tx, model DataModel, dst, scratch []byte) (p
 	case fc.IsRead():
 		exc = readFromModel(scratch[:quantityBytes], model, fc, address, req.maybeValueQuantity)
 	default: // All read functions:
-		return 0, fmt.Errorf("unhandled function code %q", fc.String())
+		return 0, errors.New("unhandled function code " + fc.String())
 	}
 
 	if exc != ExceptionNone {
-		return 0, fmt.Errorf("handling fc=%q accessing data model: %w", fc, exc)
+		return 0, exc
 	}
 
 	switch fc {
