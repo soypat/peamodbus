@@ -79,7 +79,7 @@ func InferResponsePacketLength(b []byte) (fc FunctionCode, n uint16, err error) 
 		if len(b) < 2 {
 			return 0, uint16(2 - len(b)), ErrMissingPacketData
 		}
-		n = 2 + uint16(b[1])*2
+		n = 2 + uint16(b[1])
 	case FCWriteSingleCoil, FCWriteSingleRegister, FCGetComEventCounter, FCWriteMultipleCoils, FCWriteMultipleRegisters:
 		n = 5
 	case FCReadExceptionStatus:

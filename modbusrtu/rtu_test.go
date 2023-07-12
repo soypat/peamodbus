@@ -1,6 +1,7 @@
 package modbusrtu
 
 import (
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -8,6 +9,29 @@ import (
 	"github.com/soypat/peamodbus"
 )
 
+func TestCRC(t *testing.T) {
+	testCases := []struct {
+		msgWithAddr []byte
+		expected    uint16
+	}{
+		{
+			msgWithAddr: []byte{0x56}, // Read 2 registers starting at 0x0000 from device 0x56.
+			expected:    0x7e3f,
+		},
+		{
+			msgWithAddr: []byte{0x56, 0x03, 0x00, 0x00, 0x00, 0x02}, // Read 2 registers starting at 0x0000 from device 0x56.
+			expected:    0xecc9,
+		},
+	}
+	for _, tC := range testCases {
+		t.Run(fmt.Sprintf("len=%d", len(tC.msgWithAddr)), func(t *testing.T) {
+			got := generateCRC(tC.msgWithAddr[:])
+			if got != tC.expected {
+				t.Fatalf("expected %x, got %x", tC.expected, got)
+			}
+		})
+	}
+}
 func TestIntegration(t *testing.T) {
 	const (
 		numTests  = 100

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/soypat/peamodbus"
+	"golang.org/x/exp/slog"
 )
 
 var (
@@ -16,7 +17,6 @@ var (
 
 type Client struct {
 	state   connState
-	rx      peamodbus.Rx
 	muTx    sync.Mutex
 	tx      peamodbus.Tx
 	txbuf   [256]byte
@@ -26,20 +26,22 @@ type Client struct {
 type ClientConfig struct {
 	// RxTimeout defines the maximum time to wait for a response to a request.
 	RxTimeout time.Duration
+	Logger    *slog.Logger
 }
 
 // NewClient creates a new modbus RTU client.
 func NewClient(cfg ClientConfig) *Client {
-	if cfg.RxTimeout <= 0 {
-		cfg.RxTimeout = 200 * time.Millisecond
-	}
+	// if cfg.RxTimeout <= 0 {
+	// 	cfg.RxTimeout = 200 * time.Millisecond
+	// }
 	instr := &Client{
 		state: connState{
 			closeErr: errYetToConnect,
+			log:      cfg.Logger,
 		},
 		timeout: cfg.RxTimeout,
 	}
-	instr.rx.RxCallbacks, instr.tx.TxCallbacks = instr.state.callbacks()
+	_, instr.tx.TxCallbacks = instr.state.callbacks()
 	return instr
 }
 
@@ -51,6 +53,7 @@ func (c *Client) SetTransport(port io.ReadWriter) {
 	c.muTx.Lock()
 	defer c.muTx.Unlock()
 	c.state.port = port
+	c.state.closeErr = nil
 }
 
 // ReadHoldingRegisters reads a sequence of holding registers from a device.
@@ -114,14 +117,22 @@ func (c *Client) WriteHoldingRegisters(devAddr uint8, regAddr uint16, regs []uin
 func (c *Client) transaction(rxFCFilter peamodbus.FunctionCode, addrFilter uint8, packetMissingCRC []byte) (pdu []byte, addr uint8, err error) {
 	crc := generateCRC(packetMissingCRC[:len(packetMissingCRC)-2])
 	binary.LittleEndian.PutUint16(packetMissingCRC[len(packetMissingCRC)-2:], crc)
+	c.state.debug("write outgoing packet",
+		slog.Uint64("rtuaddr", uint64(packetMissingCRC[0])),
+		slog.String("fc", peamodbus.FunctionCode(packetMissingCRC[1]).String()),
+		slog.String("outgoing", string(packetMissingCRC)),
+	)
 	_, err = c.state.port.Write(packetMissingCRC)
 	if err != nil {
 		return nil, 0, err
 	}
-	deadline := time.Now().Add(c.timeout)
-	errcount := 0
+	var deadline time.Time
+	if c.timeout > 0 {
+		deadline = time.Now().Add(c.timeout)
+	}
 
-	for time.Until(deadline) > 0 && errcount < 5 {
+	errcount := 0
+	for (deadline.IsZero() || time.Until(deadline) > 0) && errcount < 5 {
 		pdu, addr, err = c.state.TryRx(true)
 		if len(pdu) > 1 && // All Modbus response PDUs are greater-equal than 2 bytes.
 			(addrFilter == 0 || addrFilter == addr) && // Address filtering.
