@@ -23,10 +23,16 @@ type Client struct {
 	timeout time.Duration
 }
 
+type preprocessor = func(buf []byte, lastRead int) (start, end int)
+
 type ClientConfig struct {
 	// RxTimeout defines the maximum time to wait for a response to a request.
 	RxTimeout time.Duration
 	Logger    *slog.Logger
+	// Preprocessor allows modifying received bytes before passing them to the
+	// modbus parser. It should return the start and end of the modbus RTU packet.
+	// The identity preprocessor returns the whole buffer: start=0, end=len(buf).
+	Preprocessor preprocessor
 }
 
 // NewClient creates a new modbus RTU client.
@@ -38,6 +44,7 @@ func NewClient(cfg ClientConfig) *Client {
 		state: connState{
 			closeErr: errYetToConnect,
 			log:      cfg.Logger,
+			preproc:  cfg.Preprocessor,
 		},
 		timeout: cfg.RxTimeout,
 	}

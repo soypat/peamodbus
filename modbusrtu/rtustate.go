@@ -46,6 +46,7 @@ type connState struct {
 	dataEnd    int
 	rxbuf      [512]byte
 	log        *slog.Logger
+	preproc    preprocessor
 }
 
 // TryRx tries to read a complete packet from the connection. If the packet is
@@ -133,6 +134,11 @@ func (cs *connState) read(upTo int) (n int, err error) {
 	if n != 0 {
 		cs.lastRxTime = time.Now()
 		cs.dataEnd += n
+		if cs.preproc != nil {
+			start, end := cs.preproc(cs.rxbuf[cs.dataStart:cs.dataEnd], n)
+			cs.dataEnd = cs.dataStart + end
+			cs.dataStart += start
+		}
 	}
 	if err == nil && n != 0 {
 		cs.debug("read byte(s)", slog.Int("n", n), slog.String("incoming", string(cs.rxbuf[cs.dataEnd-n:cs.dataEnd])))

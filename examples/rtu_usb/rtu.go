@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"time"
 
@@ -14,6 +15,7 @@ func main() {
 		deviceAddress         = 86
 		sensorRegisterAddress = 0
 	)
+
 	port, err := serial.Open("/dev/ttyUSB0", &serial.Mode{
 		BaudRate: 9600,
 		DataBits: 8,
@@ -24,11 +26,15 @@ func main() {
 		panic(err)
 	}
 	defer port.Close()
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+
+	logfp, _ := os.Create("log.txt")
+	defer logfp.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stdout, logfp), &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
+
 	c := modbusrtu.NewClient(modbusrtu.ClientConfig{
-		// RxTimeout: time.Second,
 		Logger: logger,
 	})
 
