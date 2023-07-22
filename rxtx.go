@@ -112,10 +112,9 @@ type Request struct {
 }
 
 func (req Request) String() string {
-	var quantityOrValue string = ", Quantity"
+	var quantityOrValue string = ", Quantity "
 	if req.FC.IsWrite() {
-		quantityOrValue = ", Value"
-
+		quantityOrValue = ", Value "
 	}
 	return "request to " + req.FC.String() + " @ Addr: " + strconv.Itoa(int(req.maybeAddr)) + quantityOrValue + strconv.Itoa(int(req.maybeValueQuantity))
 }
@@ -141,12 +140,12 @@ func (req *Request) PutResponse(tx *Tx, model DataModel, dst, scratch []byte) (p
 
 	case fc == FCWriteMultipleCoils || fc == FCWriteMultipleRegisters:
 		exc = writeToModel(model, fc, address, req.maybeValueQuantity, scratch[:quantityBytes])
-	case fc.IsRead():
+	case fc == FCReadCoils || fc == FCReadDiscreteInputs ||
+		fc == FCReadHoldingRegisters || fc == FCReadInputRegisters:
 		exc = readFromModel(scratch[:quantityBytes], model, fc, address, req.maybeValueQuantity)
 	default: // All read functions:
 		return 0, errors.New("unhandled function code " + fc.String())
 	}
-
 	if exc != ExceptionNone {
 		return 0, exc
 	}
@@ -404,7 +403,7 @@ func (tx *Tx) ResponseReadInputRegisters(dst, registerData []byte) (int, error) 
 	if len(registerData)%2 != 0 {
 		return 0, errDataLengthMustBeMultipleOf2
 	}
-	ln := byte(len(registerData)) / 2
+	ln := byte(len(registerData))
 	return tx.writeSimpleU8(dst, FCReadInputRegisters, ln, registerData)
 }
 
@@ -412,7 +411,7 @@ func (tx *Tx) ResponseReadHoldingRegisters(dst, registerData []byte) (int, error
 	if len(registerData)%2 != 0 {
 		return 0, errDataLengthMustBeMultipleOf2
 	}
-	ln := byte(len(registerData)) / 2
+	ln := byte(len(registerData))
 	return tx.writeSimpleU8(dst, FCReadHoldingRegisters, ln, registerData)
 }
 

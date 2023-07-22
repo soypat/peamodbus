@@ -72,9 +72,6 @@ func (cs *serverState) HandlePendingRequests(tx *peamodbus.Tx) (err error) {
 	}()
 	for ; i >= 0; i-- {
 		req := cs.pendingRequests[i]
-		if req.req.FC == peamodbus.FCWriteSingleCoil {
-			_ = req
-		}
 		plen, err := req.req.PutResponse(tx, cs.data, txBuf[mbapsize:], scratch[:])
 		if err != nil {
 			break

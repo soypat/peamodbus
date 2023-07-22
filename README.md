@@ -3,6 +3,30 @@ Fault tolerant, TCP modbus implementation in Go that just works. Apt for embedde
 
 This is a WIP.
 
+## Protocol sequence diagram:
+
+Mermaid Sequence diagram
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+    
+    critical No requests pending
+        note left of Client: peamodbus.Tx.Request*()
+        Client ->>+ Server: Request data read or write
+        note right of Server: peamodbus.Rx.ReceiveRequest()
+        option Handle request on server side
+        Server --> Server: Identify func. code and validate request.
+        note right of Server: peamodbus.Receive*Response()
+        Server --> Server: Access modbus data, read or write.
+        note right of Server: peamodbus.Receive*Response()
+        option Write response
+        note right of Server: peamodbus.Request.PutResponse()
+        Server ->>- Client: Write response (nominal or exception)
+        note left of Client: peamodbus.Receive*Response()
+    end
+```
+
 
 ## Examples
 See up to date examples in [`examples`](./examples/) directory. These are just copy pasted from there and may occasionally be out of date.
