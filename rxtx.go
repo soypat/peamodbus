@@ -3,6 +3,7 @@ package peamodbus
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 )
@@ -95,7 +96,8 @@ func InferResponsePacketLength(b []byte) (fc FunctionCode, n uint16, err error) 
 
 // Request is a client (master) request meant for a server (instrument).
 type Request struct {
-	FC FunctionCode
+	FC             FunctionCode
+	maybeByteCount uint8
 	// First value usually contains Modbus address value.
 	maybeAddr uint16
 	// Second value usually contains Modbus quantity of addresses to read.
@@ -110,30 +112,39 @@ func (req Request) String() string {
 	return "request to " + req.FC.String() + " @ Addr: " + strconv.Itoa(int(req.maybeAddr)) + quantityOrValue + strconv.Itoa(int(req.maybeValueQuantity))
 }
 
-// PutResponse generates a response packet for the request.
-func (req *Request) PutResponse(tx *Tx, model DataModel, dst, scratch []byte) (packet int, err error) {
+// PutResponse writes the response to the receiver Request into dst. It
+func (req *Request) PutResponse(tx *Tx, model DataModel, dst, data []byte) (packet int, err error) {
 	fc := req.FC
-	isRead := fc.IsRead()
+	// isRead := fc.IsRead()
 	shortSize := fc == FCReadHoldingRegisters || fc == FCReadInputRegisters
 	quantityBytes := req.maybeValueQuantity
 	if shortSize {
 		quantityBytes *= 2
+		if req.maybeByteCount != 0 {
+			quantityBytes = uint16(req.maybeByteCount) // TODO(soypat): refactor this...
+		}
 	}
-	if isRead && int(quantityBytes) > len(scratch) {
-		return 0, io.ErrShortBuffer
-	}
+	// if isRead && int(quantityBytes) > len(data) {
+	// 	return 0, io.ErrShortBuffer
+	// }
+	// Read Data Offset.
+	const rdo = 2
+	readData := data[rdo : rdo+quantityBytes]
 	address := req.maybeAddr
 	var exc Exception
 	switch {
 	case fc == FCWriteSingleRegister || fc == FCWriteSingleCoil:
+		var scratch [2]byte
 		binary.BigEndian.PutUint16(scratch[:2], quantityBytes)
 		exc = writeToModel(model, fc, address, 1, scratch[:2])
 
 	case fc == FCWriteMultipleCoils || fc == FCWriteMultipleRegisters:
-		exc = writeToModel(model, fc, address, req.maybeValueQuantity, scratch[:quantityBytes])
+		exc = writeToModel(model, fc, address, req.maybeValueQuantity, data[:req.maybeByteCount])
+
 	case fc == FCReadCoils || fc == FCReadDiscreteInputs ||
 		fc == FCReadHoldingRegisters || fc == FCReadInputRegisters:
-		exc = readFromModel(scratch[:quantityBytes], model, fc, address, req.maybeValueQuantity)
+		exc = readFromModel(readData, model, fc, address, req.maybeValueQuantity)
+
 	default: // All read functions:
 		return 0, errors.New("unhandled function code " + fc.String())
 	}
@@ -144,19 +155,21 @@ func (req *Request) PutResponse(tx *Tx, model DataModel, dst, scratch []byte) (p
 	switch fc {
 	// Read functions:
 	case FCReadHoldingRegisters:
-		packet, err = tx.ResponseReadHoldingRegisters(dst, scratch[:quantityBytes])
+		packet, err = tx.ResponseReadHoldingRegisters(dst, readData)
 	case FCReadCoils:
-		packet, err = tx.ResponseReadCoils(dst, scratch[:quantityBytes])
+		packet, err = tx.ResponseReadCoils(dst, readData)
 	case FCReadInputRegisters:
-		packet, err = tx.ResponseReadInputRegisters(dst, scratch[:quantityBytes])
+		packet, err = tx.ResponseReadInputRegisters(dst, readData)
 	case FCReadDiscreteInputs:
-		packet, err = tx.ResponseReadDiscreteInputs(dst, scratch[:quantityBytes])
+		packet, err = tx.ResponseReadDiscreteInputs(dst, readData)
 
 	// Write functions:
 	case FCWriteSingleRegister:
 		packet, err = tx.ResponseWriteSingleRegister(dst, address, quantityBytes)
 	case FCWriteSingleCoil:
 		packet, err = tx.ResponseWriteSingleCoil(dst, address, quantityBytes == 0xff00)
+	case FCWriteMultipleRegisters:
+		packet, err = tx.ResponseWriteMultipleRegisters(dst, address, quantityBytes)
 	default:
 		panic("unhandled function code in request.Response()")
 	}
@@ -232,6 +245,46 @@ func ReceiveDataResponse(pdu []byte) (data []byte, err error) {
 	return data, err
 }
 
+// DecodeRequest parses a request packet and returns the request and the offset
+// into the packet where the data starts, if there is any.
+func DecodeRequest(pdu []byte) (req Request, dataoffset int, err error) {
+	if len(pdu) < 2 {
+		return req, 0, io.ErrShortBuffer
+	}
+	fc := FunctionCode(pdu[0])
+	switch fc {
+	// Request to read/write received.
+	case FCReadHoldingRegisters, FCReadInputRegisters, FCReadCoils, FCReadDiscreteInputs,
+		FCWriteSingleCoil, FCWriteSingleRegister:
+		if len(pdu) < 5 {
+			return req, 0, ErrMissingPacketData
+		}
+		req.FC = fc
+		req.maybeAddr = binary.BigEndian.Uint16(pdu[1:])
+		req.maybeValueQuantity = binary.BigEndian.Uint16(pdu[3:])
+
+	case FCWriteMultipleCoils, FCWriteMultipleRegisters:
+		if len(pdu) < 7 || len(pdu) < 6+int(pdu[5]) {
+			return req, 0, ErrMissingPacketData
+		}
+		req.FC = fc
+		req.maybeAddr = binary.BigEndian.Uint16(pdu[1:])
+		req.maybeValueQuantity = binary.BigEndian.Uint16(pdu[3:])
+		req.maybeByteCount = pdu[5]
+		dataoffset = 6
+
+	case FCReadFileRecord, FCWriteFileRecord, FCMaskWriteRegister, FCReadWriteMultipleRegisters, FCReadFIFOQueue:
+		err = ExceptionIllegalFunction // Not implemented yet.
+
+	case FCReadExceptionStatus:
+		req.FC = fc
+
+	default:
+		err = fmt.Errorf("unhandled function code: %s", fc.String())
+	}
+	return req, dataoffset, err
+}
+
 func (rx *Rx) ReceiveRequest(pdu []byte) (err error) {
 	if len(pdu) < 2 {
 		return io.ErrShortBuffer
@@ -252,11 +305,17 @@ func (rx *Rx) ReceiveRequest(pdu []byte) (err error) {
 			err = rx.RxCallbacks.OnData(rx, rx.LastPendingRequest)
 		}
 
-	case FCWriteMultipleRegisters, FCReadFileRecord,
-		FCWriteFileRecord, FCMaskWriteRegister, FCReadWriteMultipleRegisters, FCReadFIFOQueue:
+	case FCWriteMultipleCoils, FCWriteMultipleRegisters:
+		rx.LastPendingRequest.FC = fc
+		rx.LastPendingRequest.maybeAddr = binary.BigEndian.Uint16(pdu[1:])
+		rx.LastPendingRequest.maybeValueQuantity = binary.BigEndian.Uint16(pdu[3:])
+		rx.LastPendingRequest.maybeByteCount = pdu[5]
 		if rx.RxCallbacks.OnDataLong != nil {
-			err = rx.RxCallbacks.OnDataLong(rx, fc, pdu[1:])
+			err = rx.RxCallbacks.OnDataLong(rx, fc, pdu[6:])
 		}
+
+	case FCReadFileRecord, FCWriteFileRecord, FCMaskWriteRegister, FCReadWriteMultipleRegisters, FCReadFIFOQueue:
+		err = ExceptionIllegalFunction // Not implemented yet.
 
 	case FCReadExceptionStatus:
 		if rx.RxCallbacks.OnException != nil {

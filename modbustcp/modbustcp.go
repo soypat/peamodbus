@@ -27,9 +27,10 @@ const (
 type Server struct {
 	state      serverState
 	tcpTimeout time.Duration
-	rx         peamodbus.Rx
 	tx         peamodbus.Tx
 	address    net.TCPAddr
+	txBuf      [256]byte
+	rxbuf      [256]byte
 }
 
 // ServerConfig provides configuration parameters to NewServer.
@@ -68,7 +69,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		// keepalive:  cfg.KeepAlive,
 		address: *net.TCPAddrFromAddrPort(address),
 	}
-	sv.rx.RxCallbacks, sv.tx.TxCallbacks = sv.state.callbacks()
+	// sv.rx.RxCallbacks, sv.tx.TxCallbacks = sv.state.callbacks()
 	return sv, nil
 }
 
@@ -109,19 +110,21 @@ func (sv *Server) Accept(ctx context.Context) error {
 
 // HandleNext reads the next message on the network and handles it automatically.
 // This call is blocking.
-func (sv *Server) HandleNext() error {
+func (sv *Server) HandleNext() (err error) {
 	if err := sv.Err(); err != nil {
-		return err
+		return errors.New("disconnected: " + err.Error())
 	}
-	var buf [256]byte
-	n, err := io.ReadFull(sv.state.conn, buf[:mbapSize])
+	// rcvBuf is buffer used to receive the request.
+	rcvBuf := sv.rxbuf[:]
+	_, err = io.ReadFull(sv.state.conn, rcvBuf[:mbapSize])
 	if err != nil {
-		if n != 0 && errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 			sv.state.CloseConn(err)
 		}
 		return err
 	}
-	mbap, err := decodeMBAP(buf[:mbapSize])
+
+	mbap, err := decodeMBAP(rcvBuf[:mbapSize])
 	if err != nil {
 		sv.state.CloseConn(err)
 		return err
@@ -130,22 +133,39 @@ func (sv *Server) HandleNext() error {
 	sv.state.lastMBAP = mbap
 	sv.state.mu.Unlock()
 	remaining := mbap.Length - 1
-	if int(remaining) > len(buf) {
-		return fmt.Errorf("invalid MBAP length %d", mbap.Length)
-	}
-	_, err = io.ReadFull(sv.state.conn, buf[:remaining])
-	if err != nil {
+	if int(remaining) > len(rcvBuf) {
+		err = fmt.Errorf("invalid MBAP length %d", mbap.Length)
+		sv.state.CloseConn(err)
 		return err
 	}
-	fc, inferred, err := peamodbus.InferRequestPacketLength(buf[:remaining])
+	_, err = io.ReadFull(sv.state.conn, rcvBuf[:remaining])
+	if err != nil {
+		sv.state.CloseConn(err)
+		return err
+	}
+	fc, inferred, err := peamodbus.InferRequestPacketLength(rcvBuf[:remaining])
 	if err != nil || inferred != remaining {
 		log.Println("error inferring packet length:", err, " inferred:", inferred, " actualRemaining:", remaining, " fc:", fc.String())
 	}
-	err = sv.rx.ReceiveRequest(buf[:remaining])
+	req, dataoffset, err := peamodbus.DecodeRequest(rcvBuf[:remaining])
 	if err != nil {
+		sv.state.CloseConn(err)
 		return err
 	}
-	return sv.state.HandlePendingRequests(&sv.tx)
+	// sendbuf is the buffer used to send the response.
+	sendbuf := sv.txBuf[:]
+	plen, err := req.PutResponse(&sv.tx, sv.state.data, sendbuf[mbapSize:], rcvBuf[dataoffset:])
+	if err != nil {
+		sv.state.CloseConn(err)
+		return err
+	}
+	mbap.Length = uint16(plen + 1)
+	mbap.Put(sendbuf[:mbapSize])
+	_, err = sv.state.conn.Write(sendbuf[:plen+mbapSize])
+	if err != nil {
+		sv.state.CloseConn(err)
+	}
+	return err
 }
 
 // Err returns the error that caused disconnection. Is safe for concurrent use.
