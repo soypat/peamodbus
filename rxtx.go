@@ -35,11 +35,6 @@ func InferRequestPacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
 			return 0, uint16(6 - len(b)), ErrMissingPacketData
 		}
 		n = uint16(b[5])
-		if fc == FCWriteMultipleCoils && n%8 != 0 {
-			n++
-		} else if fc == FCWriteMultipleRegisters {
-			n *= 2
-		}
 		n += 6
 
 	case FCDiagnostic:
@@ -69,11 +64,7 @@ func InferResponsePacketLength(b []byte) (fc FunctionCode, n uint16, err error) 
 		if len(b) < 2 {
 			return 0, uint16(2 - len(b)), ErrMissingPacketData
 		}
-		n = uint16(b[1])
-		if n%8 != 0 {
-			n++
-		}
-		n += 2
+		n = uint16(b[1]) + 2
 
 	case FCReadHoldingRegisters, FCReadInputRegisters:
 		if len(b) < 2 {
@@ -159,7 +150,7 @@ func (req *Request) PutResponse(tx *Tx, model DataModel, dst, scratch []byte) (p
 	case FCReadInputRegisters:
 		packet, err = tx.ResponseReadInputRegisters(dst, scratch[:quantityBytes])
 	case FCReadDiscreteInputs:
-		packet, err = tx.ResponseReadDiscreteInput(dst, scratch[:quantityBytes])
+		packet, err = tx.ResponseReadDiscreteInputs(dst, scratch[:quantityBytes])
 
 	// Write functions:
 	case FCWriteSingleRegister:
@@ -367,6 +358,10 @@ func (tx *Tx) RequestWriteMultipleCoils(dst []byte, startAddr, quantityOfOutputs
 	if len(data) < 1 || len(data) > 250 || quantityOfOutputs > 2000 || quantityOfOutputs == 0 || quantityOfOutputs > uint16(ln*8) {
 		return 0, errDiscreteOOB
 	}
+	dataLenOK := (quantityOfOutputs/8 == uint16(ln)) || (quantityOfOutputs%8 != 0 && quantityOfOutputs/8+1 == uint16(ln))
+	if !dataLenOK {
+		return 0, errors.New("RequestWriteMultipleCoils: packed coil data length does not match argument quantityOfOutputs")
+	}
 	if len(dst) < 6+ln {
 		return 0, errResponseTooLargeTx
 	}
@@ -416,7 +411,11 @@ func (tx *Tx) ResponseReadHoldingRegisters(dst, registerData []byte) (int, error
 }
 
 func (tx *Tx) ResponseWriteSingleRegister(dst []byte, address, writtenValue uint16) (int, error) {
-	return tx.writeSimple2U16(dst, FCWriteSingleCoil, address, writtenValue, nil)
+	return tx.writeSimple2U16(dst, FCWriteSingleRegister, address, writtenValue, nil)
+}
+
+func (tx *Tx) ResponseWriteMultipleRegisters(dst []byte, address, quantityOfOutputs uint16) (int, error) {
+	return tx.writeSimple2U16(dst, FCWriteMultipleRegisters, address, quantityOfOutputs, nil)
 }
 
 func (tx *Tx) ResponseWriteSingleCoil(dst []byte, address uint16, writtenValue bool) (int, error) {
@@ -432,9 +431,13 @@ func (tx *Tx) ResponseReadCoils(dst, registerData []byte) (int, error) {
 	return tx.writeSimpleU8(dst, FCReadCoils, ln, registerData)
 }
 
-func (tx *Tx) ResponseReadDiscreteInput(dst, registerData []byte) (int, error) {
+func (tx *Tx) ResponseReadDiscreteInputs(dst, registerData []byte) (int, error) {
 	ln := byte(len(registerData))
 	return tx.writeSimpleU8(dst, FCReadDiscreteInputs, ln, registerData)
+}
+
+func (tx *Tx) ResponseWriteMultipleCoils(dst []byte, address, quantityOfOutputs uint16) (int, error) {
+	return tx.writeSimple2U16(dst, FCWriteMultipleCoils, address, quantityOfOutputs, nil)
 }
 
 var errResponseTooLargeTx = errors.New("response/request data too large for tx buffer")

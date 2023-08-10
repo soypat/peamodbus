@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/netip"
 	"strings"
@@ -17,6 +18,7 @@ import (
 const (
 	defaultKeepalive = 2*time.Hour - time.Minute
 	defaultPort      = ":502"
+	mbapSize         = 7
 )
 
 // Server is a Modbus TCP Server implementation. A Server listens on a network
@@ -111,21 +113,33 @@ func (sv *Server) HandleNext() error {
 	if err := sv.Err(); err != nil {
 		return err
 	}
-	mbap, n, err := decodeMBAP(sv.state.conn)
+	var buf [256]byte
+	n, err := io.ReadFull(sv.state.conn, buf[:mbapSize])
 	if err != nil {
-		if n != 0 || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		if n != 0 && errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 			sv.state.CloseConn(err)
 		}
+		return err
+	}
+	mbap, err := decodeMBAP(buf[:mbapSize])
+	if err != nil {
+		sv.state.CloseConn(err)
 		return err
 	}
 	sv.state.mu.Lock()
 	sv.state.lastMBAP = mbap
 	sv.state.mu.Unlock()
-	var buf [256]byte
 	remaining := mbap.Length - 1
+	if int(remaining) > len(buf) {
+		return fmt.Errorf("invalid MBAP length %d", mbap.Length)
+	}
 	_, err = io.ReadFull(sv.state.conn, buf[:remaining])
 	if err != nil {
 		return err
+	}
+	fc, inferred, err := peamodbus.InferRequestPacketLength(buf[:remaining])
+	if err != nil || inferred != remaining {
+		log.Println("error inferring packet length:", err, " inferred:", inferred, " actualRemaining:", remaining, " fc:", fc.String())
 	}
 	err = sv.rx.ReceiveRequest(buf[:remaining])
 	if err != nil {
@@ -165,35 +179,18 @@ type applicationHeader struct {
 }
 
 // decodeMBAP reads the MBAP header present in all TCP Modbus packets.
-//
-// The amount of bytes that are expected to remain in the reader after
-// a succesful call to this function is mbap.Length-1.
-func decodeMBAP(r io.Reader) (mbap applicationHeader, n int, err error) {
-	// We perform two passes to fail fast in case the protocol is unexpected.
-	// We are not so much doing this because this is "faster", but because
-	// we do not want to read more than we need from the reader in case the reader
-	// is buffered and blocks when reaching end of buffer.
-	var buf [4]byte
-	n, err = io.ReadFull(r, buf[:])
-	if err != nil {
-		return applicationHeader{}, n, err
+func decodeMBAP(buf []byte) (mbap applicationHeader, err error) {
+	if len(buf) < mbapSize {
+		return mbap, io.ErrShortBuffer
 	}
-	mbap.Transaction = binary.BigEndian.Uint16(buf[:2])
 	mbap.Protocol = binary.BigEndian.Uint16(buf[2:4])
 	if mbap.Protocol != 0 {
-		return applicationHeader{}, n, fmt.Errorf("MBAP header got %d protocol, expected 0", mbap.Protocol)
+		return applicationHeader{}, fmt.Errorf("MBAP header got %d protocol, expected 0", mbap.Protocol)
 	}
-	ngot, err := io.ReadFull(r, buf[:3])
-	n += ngot
-	if err != nil {
-		return applicationHeader{}, n, err
-	}
-	mbap.Length = binary.BigEndian.Uint16(buf[:2])
-	mbap.Unit = buf[2]
-	if mbap.Length < 2 {
-		return applicationHeader{}, n, errors.New("MBAP header has Length field set to value under 2 or over 256")
-	}
-	return mbap, n, nil
+	mbap.Transaction = binary.BigEndian.Uint16(buf[:2])
+	mbap.Length = binary.BigEndian.Uint16(buf[4:6])
+	mbap.Unit = buf[6]
+	return mbap, nil
 }
 
 func (ap *applicationHeader) Encode(w io.Writer) (int, error) {
