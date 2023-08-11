@@ -68,7 +68,9 @@ func TestIntegration(t *testing.T) {
 		}
 		t.Logf("========== TEST %d PASS ==========", test)
 	}
-
+	for i := 0; i < 5; i++ {
+		time.Sleep(time.Millisecond)
+	}
 }
 
 type rw struct {
