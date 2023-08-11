@@ -1,6 +1,7 @@
 package modbusrtu
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 
@@ -10,8 +11,6 @@ import (
 var ErrBadCRC = errors.New("bad CRC")
 
 type Server struct {
-	rx      peamodbus.Rx
-	tx      peamodbus.Tx
 	state   connState
 	address uint8
 }
@@ -46,7 +45,6 @@ func NewServer(port io.ReadWriter, cfg ServerConfig) *Server {
 			pendingAddr: cfg.Address,
 		},
 	}
-	sv.rx.RxCallbacks, sv.tx.TxCallbacks = sv.state.callbacks()
 	return sv
 }
 
@@ -68,13 +66,34 @@ func (sv *Server) HandleNext() (err error) {
 		}
 	}
 	if err != nil {
+		if exc, ok := err.(peamodbus.Exception); ok && len(pdu) > 2 {
+			return sv.handleException(exc, peamodbus.FunctionCode(pdu[0]))
+		}
 		// TODO: Handle error, we should probably empty out the port contents?
 		return err
 	}
-
-	err = sv.rx.ReceiveRequest(pdu)
+	req, dataoffset, err := peamodbus.DecodeRequest(pdu)
 	if err != nil {
 		return err
 	}
-	return sv.state.HandlePendingRequests(&sv.tx)
+	sendbuf := sv.state.txbuf[:]
+	sendbuf[0] = addr
+	plen, err := req.PutResponse(sv.state.data, sendbuf[1:], pdu[dataoffset:])
+	if err != nil {
+		if exc, ok := err.(peamodbus.Exception); ok {
+			return sv.handleException(exc, req.FC)
+		}
+		return err
+	}
+	endOfData := 1 + plen
+	crc := generateCRC(sendbuf[0:endOfData])
+	binary.LittleEndian.PutUint16(sendbuf[endOfData:], crc)
+	_, err = sv.state.port.Write(sendbuf[:endOfData+2])
+	return err
+}
+
+func (sv *Server) handleException(exc peamodbus.Exception, fc peamodbus.FunctionCode) error {
+	exc.PutResponse(sv.state.rxbuf[:2], fc)
+	_, err := sv.state.port.Write(sv.state.rxbuf[:2])
+	return err
 }

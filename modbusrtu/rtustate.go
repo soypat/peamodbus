@@ -37,16 +37,16 @@ type connState struct {
 
 	// pendingRequest is the request that is currently being processed.
 	// While set the server will wait for reply.
-	pendingAddr    uint8
-	pendingRequest peamodbus.Request
+	pendingAddr uint8
 
 	murx       sync.Mutex
 	lastRxTime time.Time
 	dataStart  int
 	dataEnd    int
-	rxbuf      [512]byte
 	log        *slog.Logger
 	preproc    preprocessor
+	rxbuf      [512]byte
+	txbuf      [256 + 3]byte
 }
 
 // TryRx tries to read a complete packet from the connection. If the packet is
@@ -182,53 +182,6 @@ func (cs *connState) resetRxBuf() {
 	cs.dataStart = 0
 }
 
-// NewPendingRequest adds a request to the LIFO queue.
-func (cs *connState) NewPendingRequest(r peamodbus.Request) {
-	cs.mu.Lock()
-	cs.pendingRequest = r
-	cs.mu.Unlock()
-}
-
-func (cs *connState) HandlePendingRequests(tx *peamodbus.Tx) (err error) {
-	const mbapsize = 1 + 2 // | address(uint8) | data... |  crc(uint16) |
-	var scratch, txBuf [256 + mbapsize]byte
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	txBuf[0] = cs.pendingAddr
-	req := cs.pendingRequest
-	plen, err := req.PutResponse(tx, cs.data, txBuf[1:], scratch[:])
-	if err != nil {
-		return err
-	}
-
-	endOfData := 1 + plen
-	crc := generateCRC(txBuf[0:endOfData])
-	binary.LittleEndian.PutUint16(txBuf[endOfData:], crc)
-	_, err = cs.port.Write(txBuf[:endOfData+2])
-	return err
-}
-
-func (cs *connState) callbacks() (peamodbus.RxCallbacks, peamodbus.TxCallbacks) {
-	return peamodbus.RxCallbacks{
-			OnError: func(rx *peamodbus.Rx, err error) {
-				println(err.Error())
-				// cs.CloseConn(err)
-			},
-			OnException: func(rx *peamodbus.Rx, exceptCode peamodbus.Exception) error {
-				return exceptCode
-			},
-			OnData: cs.dataAccessHandler,
-			// See dataHandler method on cs.
-			OnDataLong: cs.dataRequestHandler,
-			OnUnhandled: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
-				println("got unhandled function code ", fc.String())
-				return nil
-			},
-		}, peamodbus.TxCallbacks{
-			OnError: nil,
-		}
-}
-
 func (cs *connState) error(msg string, attrs ...slog.Attr) {
 	if cs.log != nil {
 		cs.log.LogAttrs(context.TODO(), slog.LevelError, msg, attrs...)
@@ -245,44 +198,6 @@ func (cs *connState) debug(msg string, attrs ...slog.Attr) {
 	if cs.log != nil {
 		cs.log.LogAttrs(context.TODO(), slog.LevelDebug, msg, attrs...)
 	}
-}
-
-func (cs *connState) callbacksClient() (peamodbus.RxCallbacks, peamodbus.TxCallbacks) {
-	return peamodbus.RxCallbacks{
-			OnError: func(rx *peamodbus.Rx, err error) {
-				println(err.Error())
-			},
-			OnException: func(rx *peamodbus.Rx, exceptCode peamodbus.Exception) error {
-				return exceptCode
-			},
-			OnData: cs.dataAccessHandler,
-			// See dataHandler method on cs.
-			OnDataLong: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
-				println("unhandled function code", fc.String())
-				return nil
-			},
-			OnUnhandled: func(rx *peamodbus.Rx, fc peamodbus.FunctionCode, buf []byte) error {
-				println("unhandled function code", fc.String())
-				return nil
-			},
-		}, peamodbus.TxCallbacks{
-			OnError: nil,
-		}
-}
-
-func (cs *connState) dataAccessHandler(rx *peamodbus.Rx, req peamodbus.Request) error {
-	if cs.data == nil {
-		println("got invalid data model request", req.String())
-		return nil // ignore
-	}
-	// println("got data model request", req.String())
-	cs.NewPendingRequest(req)
-	return nil
-}
-
-func (cs *connState) dataRequestHandler(rx *peamodbus.Rx, fc peamodbus.FunctionCode, data []byte) (err error) {
-	println("unhandled function code", fc.String())
-	return nil
 }
 
 func generateCRC(b []byte) (crc uint16) {

@@ -136,6 +136,7 @@ const (
 	// The slave detected a parity error in the memory. The master can retry the request,
 	// but service may be required on the slave device.
 	ExceptionMemoryParityError
+	exceptionMax
 )
 
 func (e Exception) Error() (s string) {
@@ -162,4 +163,11 @@ func (e Exception) Error() (s string) {
 		s = "unknown modbus exception " + strconv.Itoa(int(e))
 	}
 	return s
+}
+
+// PutResponse writes the 2 byte error+exception codes to the destination slice.
+// If there is not enough space in dst, PutResponse panics.
+func (e Exception) PutResponse(dst []byte, fc FunctionCode) {
+	dst[0] = byte(fc) | 0x80
+	dst[1] = byte(e)
 }

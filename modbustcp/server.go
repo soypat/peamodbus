@@ -27,7 +27,6 @@ const (
 type Server struct {
 	state      serverState
 	tcpTimeout time.Duration
-	tx         peamodbus.Tx
 	address    net.TCPAddr
 	txBuf      [256]byte
 	rxbuf      [256]byte
@@ -145,6 +144,9 @@ func (sv *Server) HandleNext() (err error) {
 	}
 	fc, inferred, err := peamodbus.InferRequestPacketLength(rcvBuf[:remaining])
 	if err != nil || inferred != remaining {
+		if exc, ok := err.(peamodbus.Exception); ok {
+			return sv.handleException(exc, fc)
+		}
 		log.Println("error inferring packet length:", err, " inferred:", inferred, " actualRemaining:", remaining, " fc:", fc.String())
 	}
 	req, dataoffset, err := peamodbus.DecodeRequest(rcvBuf[:remaining])
@@ -154,14 +156,29 @@ func (sv *Server) HandleNext() (err error) {
 	}
 	// sendbuf is the buffer used to send the response.
 	sendbuf := sv.txBuf[:]
-	plen, err := req.PutResponse(&sv.tx, sv.state.data, sendbuf[mbapSize:], rcvBuf[dataoffset:])
+	plen, err := req.PutResponse(sv.state.data, sendbuf[mbapSize:], rcvBuf[dataoffset:])
 	if err != nil {
+		if exc, ok := err.(peamodbus.Exception); ok {
+			return sv.handleException(exc, fc)
+		}
 		sv.state.CloseConn(err)
 		return err
 	}
 	mbap.Length = uint16(plen + 1)
 	mbap.Put(sendbuf[:mbapSize])
 	_, err = sv.state.conn.Write(sendbuf[:plen+mbapSize])
+	if err != nil {
+		sv.state.CloseConn(err)
+	}
+	return err
+}
+
+// handleException writes the exception response to the network.
+func (sv *Server) handleException(exc peamodbus.Exception, fc peamodbus.FunctionCode) error {
+	sendbuf := sv.txBuf[:]
+	sv.state.lastMBAP.Put(sendbuf[:mbapSize])
+	exc.PutResponse(sendbuf[mbapSize:], fc)
+	_, err := sv.state.conn.Write(sendbuf[:mbapSize+2])
 	if err != nil {
 		sv.state.CloseConn(err)
 	}

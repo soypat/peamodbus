@@ -20,6 +20,8 @@ var (
 // If there is not enough data in the packet to infer the length of the packet then
 // InferResponsePacketLength returns ErrMissingPacketData and the number of bytes
 // needed to be able to infer the packet length while guaranteeing no over-reads.
+//
+// May return a peamodbus exception code if the function code is not implemented.
 func InferRequestPacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
 	if len(b) < 1 {
 		return 0, 1, ErrMissingPacketData
@@ -38,9 +40,11 @@ func InferRequestPacketLength(b []byte) (fc FunctionCode, n uint16, err error) {
 		n = uint16(b[5])
 		n += 6
 
-	case FCDiagnostic:
+	case FCDiagnostic, FCMaskWriteRegister, FCReadDeviceIdentification,
+		FCReadFIFOQueue, FCReadFileRecord, FCReadWriteMultipleRegisters,
+		FCWriteFileRecord:
+		err = ExceptionIllegalFunction // Not implemented yet.
 
-		fallthrough
 	default:
 		err = ErrBadFunctionCode
 	}
@@ -60,6 +64,10 @@ func InferResponsePacketLength(b []byte) (fc FunctionCode, n uint16, err error) 
 		return 0, 1, ErrMissingPacketData
 	}
 	fc = FunctionCode(b[0])
+	if fc&0x80 != 0 {
+		// Is exception code so only contains an error code byte and exception code byte.
+		return fc &^ 0x80, 2, nil
+	}
 	switch fc {
 	case FCReadCoils, FCReadDiscreteInputs:
 		if len(b) < 2 {
@@ -112,97 +120,73 @@ func (req Request) String() string {
 	return "request to " + req.FC.String() + " @ Addr: " + strconv.Itoa(int(req.maybeAddr)) + quantityOrValue + strconv.Itoa(int(req.maybeValueQuantity))
 }
 
-// PutResponse writes the response to the receiver Request into dst. It
-func (req *Request) PutResponse(tx *Tx, model DataModel, dst, data []byte) (packet int, err error) {
+// PutResponse writes the response to the receiver Request into dst.
+//
+// Returns a Exception returned by DataModel or if function code is not implemented.
+func (req *Request) PutResponse(model DataModel, dst, data []byte) (packetLenWritten int, err error) {
 	fc := req.FC
-	// isRead := fc.IsRead()
 	shortSize := fc == FCReadHoldingRegisters || fc == FCReadInputRegisters
 	quantityBytes := req.maybeValueQuantity
 	if shortSize {
-		quantityBytes *= 2
 		if req.maybeByteCount != 0 {
 			quantityBytes = uint16(req.maybeByteCount) // TODO(soypat): refactor this...
+		} else {
+			quantityBytes *= 2
 		}
 	}
-	// if isRead && int(quantityBytes) > len(data) {
-	// 	return 0, io.ErrShortBuffer
-	// }
+
 	// Read Data Offset.
 	const rdo = 2
 	readData := data[rdo : rdo+quantityBytes]
 	address := req.maybeAddr
 	var exc Exception
-	switch {
-	case fc == FCWriteSingleRegister || fc == FCWriteSingleCoil:
+	switch fc {
+	case FCWriteSingleRegister, FCWriteSingleCoil:
 		var scratch [2]byte
 		binary.BigEndian.PutUint16(scratch[:2], quantityBytes)
 		exc = writeToModel(model, fc, address, 1, scratch[:2])
 
-	case fc == FCWriteMultipleCoils || fc == FCWriteMultipleRegisters:
+	case FCWriteMultipleCoils, FCWriteMultipleRegisters:
 		exc = writeToModel(model, fc, address, req.maybeValueQuantity, data[:req.maybeByteCount])
 
-	case fc == FCReadCoils || fc == FCReadDiscreteInputs ||
-		fc == FCReadHoldingRegisters || fc == FCReadInputRegisters:
+	case FCReadCoils, FCReadDiscreteInputs,
+		FCReadHoldingRegisters, FCReadInputRegisters:
 		exc = readFromModel(readData, model, fc, address, req.maybeValueQuantity)
 
-	default: // All read functions:
-		return 0, errors.New("unhandled function code " + fc.String())
+	default:
+		exc = ExceptionIllegalFunction
 	}
 	if exc != ExceptionNone {
-		return 0, exc
+		if exc > ExceptionMemoryParityError {
+			return 0, fmt.Errorf("unknown exception code returned by DataModel (%d)", exc)
+		}
+		exc.PutResponse(dst, fc)
+		return 2, exc
 	}
-
+	var tx Tx
 	switch fc {
 	// Read functions:
 	case FCReadHoldingRegisters:
-		packet, err = tx.ResponseReadHoldingRegisters(dst, readData)
+		packetLenWritten, err = tx.ResponseReadHoldingRegisters(dst, readData)
 	case FCReadCoils:
-		packet, err = tx.ResponseReadCoils(dst, readData)
+		packetLenWritten, err = tx.ResponseReadCoils(dst, readData)
 	case FCReadInputRegisters:
-		packet, err = tx.ResponseReadInputRegisters(dst, readData)
+		packetLenWritten, err = tx.ResponseReadInputRegisters(dst, readData)
 	case FCReadDiscreteInputs:
-		packet, err = tx.ResponseReadDiscreteInputs(dst, readData)
+		packetLenWritten, err = tx.ResponseReadDiscreteInputs(dst, readData)
 
 	// Write functions:
 	case FCWriteSingleRegister:
-		packet, err = tx.ResponseWriteSingleRegister(dst, address, quantityBytes)
+		packetLenWritten, err = tx.ResponseWriteSingleRegister(dst, address, quantityBytes)
 	case FCWriteSingleCoil:
-		packet, err = tx.ResponseWriteSingleCoil(dst, address, quantityBytes == 0xff00)
+		packetLenWritten, err = tx.ResponseWriteSingleCoil(dst, address, quantityBytes == 0xff00)
 	case FCWriteMultipleRegisters:
-		packet, err = tx.ResponseWriteMultipleRegisters(dst, address, quantityBytes)
+		packetLenWritten, err = tx.ResponseWriteMultipleRegisters(dst, address, quantityBytes)
 	default:
 		panic("unhandled function code in request.Response()")
 	}
 
-	return packet, err
-}
-
-type Rx struct {
-	LastPendingRequest Request
-	RxCallbacks        RxCallbacks
-}
-
-type RxCallbacks struct {
-	// OnError executed when a decoding error is encountered after
-	// consuming a non-zero amoung of bytes from the underlying transport.
-	// If this callback is set then it becomes the responsability of the callback
-	// to close the underlying transport.
-	OnError     func(rx *Rx, err error)
-	OnException func(rx *Rx, except Exception) error
-
-	// Called on PDUs with function codes coming from a client that have undefined byte length.
-	// May be any of the following:
-	//  FCWriteMultipleRegisters, FCReadFileRecord,
-	//  FCWriteFileRecord, FCMaskWriteRegister, FCReadWriteMultipledRegisters, FCReadFIFOQueue:
-	OnDataLong func(rx *Rx, fc FunctionCode, buf []byte) error
-
-	// Called on PDUs with function codes coming from a client that have defined byte length.
-	//  FCReadCoils, FCReadDiscreteInputs, FCReadHoldingRegister, FCReadInputRegister,
-	//  FCWriteSingleCoil, FCWriteSingleRegister
-	OnData func(rx *Rx, req Request) error
-
-	// Is called on unhandled function code packets received.
-	OnUnhandled func(rx *Rx, fc FunctionCode, buf []byte) error
+	return packetLenWritten, err
 }
 
 // ReceiveSingleWriteResponse
@@ -285,83 +269,16 @@ func DecodeRequest(pdu []byte) (req Request, dataoffset int, err error) {
 	return req, dataoffset, err
 }
 
-func (rx *Rx) ReceiveRequest(pdu []byte) (err error) {
-	if len(pdu) < 2 {
-		return io.ErrShortBuffer
-	}
-	fc := FunctionCode(pdu[0])
-	switch fc {
-
-	// Request to read/write received.
-	case FCReadHoldingRegisters, FCReadInputRegisters, FCReadCoils, FCReadDiscreteInputs,
-		FCWriteSingleCoil, FCWriteSingleRegister:
-		if len(pdu) < 5 {
-			return io.ErrShortBuffer
-		}
-		rx.LastPendingRequest.FC = fc
-		rx.LastPendingRequest.maybeAddr = binary.BigEndian.Uint16(pdu[1:])
-		rx.LastPendingRequest.maybeValueQuantity = binary.BigEndian.Uint16(pdu[3:])
-		if rx.RxCallbacks.OnData != nil {
-			err = rx.RxCallbacks.OnData(rx, rx.LastPendingRequest)
-		}
-
-	case FCWriteMultipleCoils, FCWriteMultipleRegisters:
-		rx.LastPendingRequest.FC = fc
-		rx.LastPendingRequest.maybeAddr = binary.BigEndian.Uint16(pdu[1:])
-		rx.LastPendingRequest.maybeValueQuantity = binary.BigEndian.Uint16(pdu[3:])
-		rx.LastPendingRequest.maybeByteCount = pdu[5]
-		if rx.RxCallbacks.OnDataLong != nil {
-			err = rx.RxCallbacks.OnDataLong(rx, fc, pdu[6:])
-		}
-
-	case FCReadFileRecord, FCWriteFileRecord, FCMaskWriteRegister, FCReadWriteMultipleRegisters, FCReadFIFOQueue:
-		err = ExceptionIllegalFunction // Not implemented yet.
-
-	case FCReadExceptionStatus:
-		if rx.RxCallbacks.OnException != nil {
-			err = rx.RxCallbacks.OnException(rx, Exception(pdu[1]))
-		}
-	default:
-		if rx.RxCallbacks.OnUnhandled != nil {
-			err = rx.RxCallbacks.OnUnhandled(rx, fc, pdu[1:])
-		}
-	}
-	if err != nil {
-		rx.handleErr(err)
-	}
-	return err
-}
-
-// handleErr is a convenience wrapper for RxCallbacks.OnError. If RxCallbacks.OnError
-// is not defined then handleErr just closes the connection.
-func (rx *Rx) handleErr(err error) {
-	if rx.RxCallbacks.OnError != nil {
-		rx.RxCallbacks.OnError(rx, err)
-		return
-	}
-}
-
-// Tx handles the marshalling of frames over a underlying transport.
-type Tx struct {
-	TxCallbacks TxCallbacks
-}
-
-// TxCallbacks stores functions to be called on events during marshalling of websocket frames.
-type TxCallbacks struct {
-	// OnError is called when
-	OnError func(tx *Tx, err error)
-	// OnDataAccess func(tx *Tx, fc FunctionCode, startAddr uint16, dst []byte) error
-}
-
-// NewTx creates a new Tx ready for use.
-func NewTx() *Tx {
-	tx := Tx{}
-	return &tx
-}
+// Tx provides the low level functions that marshal modbus packets onto byte slices.
+//
+// If implementing a modbus server it is very likely one will not interact
+// with Tx directly but rather use the higher level PutResponse method of Request.
+type Tx struct{}
 
 var (
 	errDiscreteOOB = errors.New("discrete address inputs/coils out of bounds (0..0xffff) or too many (1..2000)")
-	errRegisterOOB = errors.New("register address out of bounds (0..0xffff) or too many (1..125)")
+	errRegisterOOB = errors.New("register address out of bounds (0..0xffff) or too many (1..125 for read, 1..123 for write)")
+	errCoilPacking = errors.New("RequestWriteMultipleCoils: packed coil data length does not match argument quantityOfOutputs")
 )
 
 // RequestReadCoils writes packet to dst used to read from 1 to 2000 contiguous status of coils in a remote device.
@@ -419,7 +336,7 @@ func (tx *Tx) RequestWriteMultipleCoils(dst []byte, startAddr, quantityOfOutputs
 	}
 	dataLenOK := (quantityOfOutputs/8 == uint16(ln)) || (quantityOfOutputs%8 != 0 && quantityOfOutputs/8+1 == uint16(ln))
 	if !dataLenOK {
-		return 0, errors.New("RequestWriteMultipleCoils: packed coil data length does not match argument quantityOfOutputs")
+		return 0, errCoilPacking
 	}
 	if len(dst) < 6+ln {
 		return 0, errResponseTooLargeTx
@@ -500,15 +417,6 @@ func (tx *Tx) ResponseWriteMultipleCoils(dst []byte, address, quantityOfOutputs 
 }
 
 var errResponseTooLargeTx = errors.New("response/request data too large for tx buffer")
-
-func (tx *Tx) writeSimple(dst []byte, fc FunctionCode, responseData []byte) (int, error) {
-	if len(responseData) > len(dst)-1 {
-		return 0, errResponseTooLargeTx
-	}
-	dst[0] = byte(fc)
-	n := copy(dst[1:], responseData)
-	return n + 1, nil
-}
 
 func (tx *Tx) writeSimpleU8(dst []byte, fc FunctionCode, v1 uint8, responseData []byte) (int, error) {
 	if len(responseData) > len(dst)-(1+1) {

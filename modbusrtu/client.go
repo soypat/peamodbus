@@ -48,7 +48,6 @@ func NewClient(cfg ClientConfig) *Client {
 		},
 		timeout: cfg.RxTimeout,
 	}
-	_, instr.tx.TxCallbacks = instr.state.callbacks()
 	return instr
 }
 
