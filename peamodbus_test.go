@@ -33,6 +33,9 @@ func TestReadHoldingRegisters_loopback(t *testing.T) {
 		t.Fatal(err)
 	}
 	respOffset, err := req.PutResponse(model, responseBuf[:], reqBuf[dataoff:])
+	if err != nil {
+		t.Fatal(err)
+	}
 	fc, n16, err = InferResponsePacketLength(responseBuf[:])
 	if err != nil {
 		t.Fatal(err)
