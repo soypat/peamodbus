@@ -1,6 +1,8 @@
 package peamodbus
 
 import (
+	"math"
+	"math/rand"
 	"testing"
 )
 
@@ -284,6 +286,70 @@ func TestInferTxRequestLength(t *testing.T) {
 			if fc != FCWriteMultipleRegisters || int(n16) != n {
 				t.Fatal("expected function code 16, length", n, "got", fc, n16)
 			}
+		}
+	}
+}
+
+func TestDataInterpreter(t *testing.T) {
+	data := &BlockedModel{}
+	var interpret DataInterpreter
+	rng := rand.New(rand.NewSource(1))
+	for addr := 0; addr < 122; addr++ {
+		f32 := rng.Float32()
+		exc := interpret.PutFloat32InHolding(data, addr, f32)
+		if exc != 0 {
+			t.Fatal("putf32", addr, exc)
+		}
+		got, exc := interpret.Float32FromHolding(data, addr)
+		if exc != 0 {
+			t.Fatal("getf32", addr, exc)
+		}
+		if got != f32 {
+			t.Fatalf("read back fail: got=%x want=%x", math.Float32bits(got), math.Float32bits(f32))
+		}
+
+		// 64 bit test.
+		f64 := rng.Float64()
+		exc = interpret.PutFloat64InHolding(data, addr, f64)
+		if exc != 0 {
+			t.Fatal("putf64", addr, exc)
+		}
+		got64, exc := interpret.Float64FromHolding(data, addr)
+		if exc != 0 {
+			t.Fatal("getf64", addr, exc)
+		}
+		if got64 != f64 {
+			t.Fatalf("read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
+		}
+	}
+
+	data = &BlockedModel{} // Reset model for input test.
+	for addr := 0; addr < 122; addr++ {
+		f32 := rng.Float32()
+		exc := interpret.PutFloat32InInput(data, addr, f32)
+		if exc != 0 {
+			t.Fatal("input putf32", addr, exc)
+		}
+		got, exc := interpret.Float32FromInput(data, addr)
+		if exc != 0 {
+			t.Fatal("input getf32", addr, exc)
+		}
+		if got != f32 {
+			t.Fatalf("input read back fail: got=%x want=%x", math.Float32bits(got), math.Float32bits(f32))
+		}
+
+		// 64 bit test.
+		f64 := rng.Float64()
+		exc = interpret.PutFloat64InInput(data, addr, f64)
+		if exc != 0 {
+			t.Fatal("input putf64", addr, exc)
+		}
+		got64, exc := interpret.Float64FromInput(data, addr)
+		if exc != 0 {
+			t.Fatal("input getf64", addr, exc)
+		}
+		if got64 != f64 {
+			t.Fatalf("input read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
 		}
 	}
 }

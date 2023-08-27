@@ -31,6 +31,7 @@ package peamodbus
 
 import (
 	"encoding/binary"
+	"math"
 	"sync"
 )
 
@@ -293,4 +294,228 @@ func (dm *lockedDataModel) SetDiscreteInput(i int, v bool) Exception {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	return dm.dm.SetDiscreteInput(i, v)
+}
+
+// FromInput
+func joinExc(excs ...Exception) Exception {
+	for _, exc := range excs {
+		if exc != ExceptionNone {
+			return exc
+		}
+	}
+	return ExceptionNone
+}
+
+type DataInterpreter struct {
+	badFloat float32
+}
+
+// Int16FromHolding interprets the holding register at i as a signed 16 bit integer.
+func (interpret *DataInterpreter) Int16FromHolding(dm DataModel, i int) (int16, Exception) {
+	i16, exc := dm.GetHoldingRegister(i)
+	if exc != ExceptionNone {
+		return 0, exc
+	}
+	return int16(i16), ExceptionNone
+}
+
+// Uint32FromHolding interprets consecutive 32bit holding register data at startIdx as a unsigned integer.
+func (interpret *DataInterpreter) Uint32FromHolding(dm DataModel, startIdx int) (uint32, Exception) {
+	u0, exc := dm.GetHoldingRegister(startIdx)
+	u1, exc1 := dm.GetHoldingRegister(startIdx + 1)
+	exc = joinExc(exc, exc1)
+	if exc != ExceptionNone {
+		return 0, exc
+	}
+	// Big endian representation for modbus.
+	return uint32(u0)<<16 | uint32(u1), ExceptionNone
+}
+
+// Uint64FromHolding interprets consecutive 64bit holding register data at startIdx as a unsigned integer.
+func (interpret *DataInterpreter) Uint64FromHolding(dm DataModel, startIdx int) (uint64, Exception) {
+	u0, exc := dm.GetHoldingRegister(startIdx)
+	u1, exc1 := dm.GetHoldingRegister(startIdx + 1)
+	u2, exc2 := dm.GetHoldingRegister(startIdx + 2)
+	u3, exc3 := dm.GetHoldingRegister(startIdx + 3)
+	exc = joinExc(exc, exc1, exc2, exc3)
+	if exc != ExceptionNone {
+		return 0, exc
+	}
+	// Big endian representation for modbus.
+	return uint64(u0)<<48 | uint64(u1)<<32 | uint64(u2)<<16 | uint64(u3), ExceptionNone
+}
+
+// Int32FromHolding interprets consecutive 32bit holding register data at startIdx as a signed integer.
+func (interpret *DataInterpreter) Int32FromHolding(dm DataModel, startIdx int) (int32, Exception) {
+	i32, exc := interpret.Uint32FromHolding(dm, startIdx)
+	return int32(i32), exc
+}
+
+// Float32FromHolding interprets consecutive 32bit holding register data at startIdx as a floating point number.
+func (interpret *DataInterpreter) Float32FromHolding(dm DataModel, startIdx int) (float32, Exception) {
+	f32, exc := interpret.Uint32FromHolding(dm, startIdx)
+	if exc != ExceptionNone {
+		return interpret.badFloat, exc
+	}
+	return math.Float32frombits(f32), ExceptionNone
+}
+
+// Int64FromHolding interprets consecutive 64bit holding register data at startIdx as a signed integer.
+func (interpret *DataInterpreter) Int64FromHolding(dm DataModel, startIdx int) (int64, Exception) {
+	i64, exc := interpret.Uint64FromHolding(dm, startIdx)
+	return int64(i64), exc
+}
+
+// Float64FromHolding interprets consecutive 64bit holding register data at startIdx as a floating point number.
+func (interpret *DataInterpreter) Float64FromHolding(dm DataModel, startIdx int) (float64, Exception) {
+	f64, exc := interpret.Uint64FromHolding(dm, startIdx)
+	if exc != ExceptionNone {
+		return float64(interpret.badFloat), exc
+	}
+	return math.Float64frombits(f64), ExceptionNone
+}
+
+//
+// Begin Interpreter Input functions.
+//
+
+// Int16FromInput interprets the input register at i as a signed 16 bit integer.
+func (interpret *DataInterpreter) Int16FromInput(dm DataModel, i int) (int16, Exception) {
+	i16, exc := dm.GetInputRegister(i)
+	if exc != ExceptionNone {
+		return 0, exc
+	}
+	return int16(i16), ExceptionNone
+}
+
+// Uint32FromInput interprets consecutive 32bit input register data at startIdx as a unsigned integer.
+func (interpret *DataInterpreter) Uint32FromInput(dm DataModel, startIdx int) (uint32, Exception) {
+	u0, exc := dm.GetInputRegister(startIdx)
+	u1, exc1 := dm.GetInputRegister(startIdx + 1)
+	exc = joinExc(exc, exc1)
+	if exc != ExceptionNone {
+		return 0, exc
+	}
+	// Big endian representation for modbus.
+	return uint32(u0)<<16 | uint32(u1), ExceptionNone
+}
+
+// Uint64FromInput interprets consecutive 64bit input register data at startIdx as a unsigned integer.
+func (interpret *DataInterpreter) Uint64FromInput(dm DataModel, startIdx int) (uint64, Exception) {
+	u0, exc := dm.GetInputRegister(startIdx)
+	u1, exc1 := dm.GetInputRegister(startIdx + 1)
+	u2, exc2 := dm.GetInputRegister(startIdx + 2)
+	u3, exc3 := dm.GetInputRegister(startIdx + 3)
+	exc = joinExc(exc, exc1, exc2, exc3)
+	if exc != ExceptionNone {
+		return 0, exc
+	}
+	// Big endian representation for modbus.
+	return uint64(u0)<<48 | uint64(u1)<<32 | uint64(u2)<<16 | uint64(u3), ExceptionNone
+}
+
+// Int32FromInput interprets consecutive 32bit input register data at startIdx as a signed integer.
+func (interpret *DataInterpreter) Int32FromInput(dm DataModel, startIdx int) (int32, Exception) {
+	i32, exc := interpret.Uint32FromInput(dm, startIdx)
+	return int32(i32), exc
+}
+
+// Float32FromInput interprets consecutive 32bit input register data at startIdx as a floating point number.
+func (interpret *DataInterpreter) Float32FromInput(dm DataModel, startIdx int) (float32, Exception) {
+	f32, exc := interpret.Uint32FromInput(dm, startIdx)
+	if exc != ExceptionNone {
+		return interpret.badFloat, exc
+	}
+	return math.Float32frombits(f32), ExceptionNone
+}
+
+// Int64FromInput interprets consecutive 64bit input register data at startIdx as a signed integer.
+func (interpret *DataInterpreter) Int64FromInput(dm DataModel, startIdx int) (int64, Exception) {
+	i64, exc := interpret.Uint64FromInput(dm, startIdx)
+	return int64(i64), exc
+}
+
+// Float64FromInput interprets consecutive 64bit input register data at startIdx as a floating point number.
+func (interpret *DataInterpreter) Float64FromInput(dm DataModel, startIdx int) (float64, Exception) {
+	f64, exc := interpret.Uint64FromInput(dm, startIdx)
+	if exc != ExceptionNone {
+		return float64(interpret.badFloat), exc
+	}
+	return math.Float64frombits(f64), ExceptionNone
+}
+
+//
+// Begin Put/set functions.
+//
+
+// PutUint64InHolding stores a 64bit unsigned integer into 4 holding registers at startIdx.
+func (interpret *DataInterpreter) PutUint64InHolding(dm DataModel, startIdx int, v uint64) Exception {
+	const sizeInWords = 4
+	for i := 0; i < sizeInWords; i++ {
+		shift := (sizeInWords - i - 1) * 16
+		exc := dm.SetHoldingRegister(startIdx+i, uint16(v>>shift))
+		if exc != 0 {
+			return exc
+		}
+	}
+	return 0
+}
+
+// PutUint32InHolding stores a 32bit unsigned integer into 2 holding registers at startIdx.
+func (interpret *DataInterpreter) PutUint32InHolding(dm DataModel, startIdx int, v uint32) Exception {
+	const sizeInWords = 2
+	for i := 0; i < sizeInWords; i++ {
+		shift := (sizeInWords - i - 1) * 16
+		exc := dm.SetHoldingRegister(startIdx+i, uint16(v>>shift))
+		if exc != 0 {
+			return exc
+		}
+	}
+	return 0
+}
+
+// PutFloat32InHolding stores a 32bit floating point number into 2 holding registers at startIdx.
+func (interpret *DataInterpreter) PutFloat32InHolding(dm DataModel, startIdx int, v float32) Exception {
+	return interpret.PutUint32InHolding(dm, startIdx, math.Float32bits(v))
+}
+
+// PutFloat64InHolding stores a 64bit floating point number into 4 holding registers at startIdx.
+func (interpret *DataInterpreter) PutFloat64InHolding(dm DataModel, startIdx int, v float64) Exception {
+	return interpret.PutUint64InHolding(dm, startIdx, math.Float64bits(v))
+}
+
+// PutUint64InInput stores a 64bit unsigned integer into 4 input registers at startIdx.
+func (interpret *DataInterpreter) PutUint64InInput(dm DataModel, startIdx int, v uint64) Exception {
+	const sizeInWords = 4
+	for i := 0; i < sizeInWords; i++ {
+		shift := (sizeInWords - i - 1) * 16
+		exc := dm.SetInputRegister(startIdx+i, uint16(v>>shift))
+		if exc != 0 {
+			return exc
+		}
+	}
+	return 0
+}
+
+// PutUint32InInput stores a 32bit unsigned integer into 2 input registers at startIdx.
+func (interpret *DataInterpreter) PutUint32InInput(dm DataModel, startIdx int, v uint32) Exception {
+	const sizeInWords = 2
+	for i := 0; i < sizeInWords; i++ {
+		shift := (sizeInWords - i - 1) * 16
+		exc := dm.SetInputRegister(startIdx+i, uint16(v>>shift))
+		if exc != 0 {
+			return exc
+		}
+	}
+	return 0
+}
+
+// PutFloat32InInput stores a 32bit floating point number into 2 input registers at startIdx.
+func (interpret *DataInterpreter) PutFloat32InInput(dm DataModel, startIdx int, v float32) Exception {
+	return interpret.PutUint32InInput(dm, startIdx, math.Float32bits(v))
+}
+
+// PutFloat64InInput stores a 64bit floating point number into 4 input registers at startIdx.
+func (interpret *DataInterpreter) PutFloat64InInput(dm DataModel, startIdx int, v float64) Exception {
+	return interpret.PutUint64InInput(dm, startIdx, math.Float64bits(v))
 }
