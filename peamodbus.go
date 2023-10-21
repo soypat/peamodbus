@@ -42,13 +42,24 @@ import (
 // An explicit representation of Modbus memory ([BlockedModel]) occupies a kilobyte,
 // This could be reduced to just 2 bytes for a controller that just operates a 16bit sensor.
 type DataModel interface {
+	// GetCoil checks if coil at position i is set.
 	GetCoil(i int) (bool, Exception)
+	// SetCoil sets the coil at position i to b.
 	SetCoil(i int, b bool) Exception
+
+	// GetDiscreteInput checks if discrete input at position i is set.
 	GetDiscreteInput(i int) (bool, Exception)
+	// SetDiscreteInput sets the discrete input at position i to b.
 	SetDiscreteInput(i int, b bool) Exception
+
+	// GetInputRegister returns the 16-bit value of the input register at position i.
 	GetInputRegister(i int) (uint16, Exception)
+	// SetInputRegister sets the 16-bit value of the input register at position i.
 	SetInputRegister(i int, value uint16) Exception
+
+	// GetHoldingRegister returns the 16-bit value of the holding register at position i.
 	GetHoldingRegister(i int) (uint16, Exception)
+	// SetHoldingRegister sets the 16-bit value of the holding register at position i.
 	SetHoldingRegister(i int, value uint16) Exception
 }
 
@@ -64,10 +75,14 @@ func readFromModel(dst []byte, model DataModel, fc FunctionCode, startAddress, q
 		exc = ExceptionIllegalFunction
 	case !bitSize && len(dst)%2 != 0:
 		exc = ExceptionIllegalDataValue
-		// return errors.New("uneven number of bytes in dst")
 	case endAddress > 2000 || (!bitSize && endAddress >= 125):
 		exc = ExceptionIllegalDataAddr
-		// return errors.New("read request exceeds model's size")
+	}
+	if lmodel, ok := model.(*lockedDataModel); ok {
+		// If using a locked model hold the lock throughout the duration of the transaction instead on each register read.
+		model = lmodel.dm
+		lmodel.mu.Lock()
+		defer lmodel.mu.Unlock()
 	}
 	var gotu16 uint16
 	var gotb bool
@@ -123,6 +138,12 @@ func writeToModel(model DataModel, fc FunctionCode, startAddress, quantity uint1
 		exc = ExceptionIllegalDataAddr
 	case quantity != 1 && (fc == FCWriteSingleCoil || fc == FCWriteSingleRegister):
 		exc = ExceptionIllegalDataValue
+	}
+	if lmodel, ok := model.(*lockedDataModel); ok {
+		// If using a locked model hold the lock throughout the duration of the transaction instead on each register write.
+		model = lmodel.dm
+		lmodel.mu.Lock()
+		defer lmodel.mu.Unlock()
 	}
 	for i := uint16(0); exc == ExceptionNone && i < quantity; i++ {
 		ireg := i + startAddress
@@ -183,7 +204,7 @@ func (dm *BlockedModel) SetInputRegister(i int, v uint16) Exception {
 }
 
 // GetCoil returns 1 if the coil at position i is set and 0 if it is not.
-// Expects coil index in range 0..2000.
+// Expects coil index in range 0..1999.
 func (sm *BlockedModel) GetCoil(i int) (bool, Exception) {
 	if i < 0 || i >= 2000 {
 		return false, ExceptionIllegalDataAddr
@@ -193,7 +214,7 @@ func (sm *BlockedModel) GetCoil(i int) (bool, Exception) {
 }
 
 // SetCoil sets the coil at position i to 1 if value is true and to 0 if value is false.
-// Expects coil index in range 0..2000.
+// Expects coil index in range 0..1999.
 func (sm *BlockedModel) SetCoil(i int, value bool) Exception {
 	if i < 0 || i >= 2000 {
 		return ExceptionIllegalDataAddr
@@ -208,7 +229,7 @@ func (sm *BlockedModel) SetCoil(i int, value bool) Exception {
 }
 
 // GetDiscreteInput returns 1 if the discrete input at position i is set and 0 if it is not.
-// Expects discrete input index in range 0..2000.
+// Expects discrete input index in range 0..1999.
 func (sm *BlockedModel) GetDiscreteInput(i int) (bool, Exception) {
 	if i < 0 || i >= 2000 {
 		return false, ExceptionIllegalDataAddr
@@ -218,7 +239,7 @@ func (sm *BlockedModel) GetDiscreteInput(i int) (bool, Exception) {
 }
 
 // SetDiscreteInput sets the discrete input at position i to 1 if value is true and 0 if it is false.
-// Expects discrete input index in range 0..2000.
+// Expects discrete input index in range 0..1999.
 func (sm *BlockedModel) SetDiscreteInput(i int, value bool) Exception {
 	if i < 0 || i >= 2000 {
 		return ExceptionIllegalDataAddr
