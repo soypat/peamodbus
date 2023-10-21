@@ -1,6 +1,7 @@
 package peamodbus
 
 import (
+	"encoding/binary"
 	"math"
 	"math/rand"
 	"testing"
@@ -294,13 +295,14 @@ func TestDataInterpreter(t *testing.T) {
 	data := &BlockedModel{}
 	var interpret DataInterpreter
 	rng := rand.New(rand.NewSource(1))
+	var buf [8]byte
 	for addr := 0; addr < 122; addr++ {
 		f32 := rng.Float32()
-		exc := interpret.PutFloat32InHolding(data, addr, f32)
+		exc := interpret.PutFloat32Holding(data, addr, f32)
 		if exc != 0 {
 			t.Fatal("putf32", addr, exc)
 		}
-		got, exc := interpret.Float32FromHolding(data, addr)
+		got, exc := interpret.Float32Holding(data, addr)
 		if exc != 0 {
 			t.Fatal("getf32", addr, exc)
 		}
@@ -310,27 +312,47 @@ func TestDataInterpreter(t *testing.T) {
 
 		// 64 bit test.
 		f64 := rng.Float64()
-		exc = interpret.PutFloat64InHolding(data, addr, f64)
+		exc = interpret.PutFloat64Holding(data, addr, f64)
 		if exc != 0 {
 			t.Fatal("putf64", addr, exc)
 		}
-		got64, exc := interpret.Float64FromHolding(data, addr)
+		got64, exc := interpret.Float64Holding(data, addr)
 		if exc != 0 {
 			t.Fatal("getf64", addr, exc)
 		}
 		if got64 != f64 {
 			t.Fatalf("read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
 		}
+		n, exc := interpret.ReadBytesHolding(data, buf[:8], addr)
+		if n != 8 || exc != ExceptionNone {
+			t.Error("ReadBytesHolding failed", n, exc)
+		}
+		got64 = math.Float64frombits(binary.BigEndian.Uint64(buf[:]))
+		if got64 != f64 {
+			t.Fatalf("ReadBytesInput: input read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
+		}
+		buf = [8]byte{}
+		n, exc = interpret.WriteBytesHolding(data, buf[:8], addr)
+		if n != 8 || exc != ExceptionNone {
+			t.Error("WriteBytesInput failed")
+		}
+		got64, exc = interpret.Float64Holding(data, addr)
+		if exc != ExceptionNone {
+			t.Fatal("unexpected exception")
+		}
+		if got64 != 0 {
+			t.Fatalf("WriteBytesInput: input read back fail: got=%x want=0", math.Float64bits(got64))
+		}
 	}
 
 	data = &BlockedModel{} // Reset model for input test.
 	for addr := 0; addr < 122; addr++ {
 		f32 := rng.Float32()
-		exc := interpret.PutFloat32InInput(data, addr, f32)
+		exc := interpret.PutFloat32Input(data, addr, f32)
 		if exc != 0 {
 			t.Fatal("input putf32", addr, exc)
 		}
-		got, exc := interpret.Float32FromInput(data, addr)
+		got, exc := interpret.Float32Input(data, addr)
 		if exc != 0 {
 			t.Fatal("input getf32", addr, exc)
 		}
@@ -340,16 +362,38 @@ func TestDataInterpreter(t *testing.T) {
 
 		// 64 bit test.
 		f64 := rng.Float64()
-		exc = interpret.PutFloat64InInput(data, addr, f64)
+		exc = interpret.PutFloat64Input(data, addr, f64)
 		if exc != 0 {
 			t.Fatal("input putf64", addr, exc)
 		}
-		got64, exc := interpret.Float64FromInput(data, addr)
+		got64, exc := interpret.Float64Input(data, addr)
 		if exc != 0 {
 			t.Fatal("input getf64", addr, exc)
 		}
 		if got64 != f64 {
 			t.Fatalf("input read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
 		}
+
+		n, exc := interpret.ReadBytesInput(data, buf[:8], addr)
+		if n != 8 || exc != ExceptionNone {
+			t.Error("ReadBytesInput failed")
+		}
+		got64 = math.Float64frombits(binary.BigEndian.Uint64(buf[:]))
+		if got64 != f64 {
+			t.Fatalf("ReadBytesInput: input read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
+		}
+		buf = [8]byte{}
+		n, exc = interpret.WriteBytesInput(data, buf[:8], addr)
+		if n != 8 || exc != ExceptionNone {
+			t.Error("WriteBytesInput failed", n, exc)
+		}
+		got64, exc = interpret.Float64Input(data, addr)
+		if exc != ExceptionNone {
+			t.Fatal("unexpected exception")
+		}
+		if got64 != 0 {
+			t.Fatalf("WriteBytesInput: input read back fail: got=%x want=0", math.Float64bits(got64))
+		}
 	}
+
 }
