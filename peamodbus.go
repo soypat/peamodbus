@@ -78,12 +78,9 @@ func readFromModel(dst []byte, model DataModel, fc FunctionCode, startAddress, q
 	case endAddress > 2000 || (!bitSize && endAddress >= 125):
 		exc = ExceptionIllegalDataAddr
 	}
-	if lmodel, ok := model.(*lockedDataModel); ok {
-		// If using a locked model hold the lock throughout the duration of the transaction instead on each register read.
-		model = lmodel.dm
-		lmodel.mu.Lock()
-		defer lmodel.mu.Unlock()
-	}
+	model, unlock := lockDataModel(model)
+	defer unlock()
+
 	var gotu16 uint16
 	var gotb bool
 	for i := uint16(0); exc == ExceptionNone && i < quantity; i++ {
@@ -139,12 +136,9 @@ func writeToModel(model DataModel, fc FunctionCode, startAddress, quantity uint1
 	case quantity != 1 && (fc == FCWriteSingleCoil || fc == FCWriteSingleRegister):
 		exc = ExceptionIllegalDataValue
 	}
-	if lmodel, ok := model.(*lockedDataModel); ok {
-		// If using a locked model hold the lock throughout the duration of the transaction instead on each register write.
-		model = lmodel.dm
-		lmodel.mu.Lock()
-		defer lmodel.mu.Unlock()
-	}
+	model, unlock := lockDataModel(model)
+	defer unlock()
+
 	for i := uint16(0); exc == ExceptionNone && i < quantity; i++ {
 		ireg := i + startAddress
 		switch fc { // TODO(soypat): Benchmark to see if using an `if bitsize` is faster.
@@ -532,26 +526,43 @@ func (interpret *DataInterpreter) PutUint32Input(dm DataModel, startIdx int, v u
 
 // PutFloat32Input stores a 32bit floating point number into 2 input registers at startIdx.
 func (interpret *DataInterpreter) PutFloat32Input(dm DataModel, startIdx int, v float32) Exception {
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
 	return interpret.PutUint32Input(dm, startIdx, math.Float32bits(v))
 }
 
 // PutFloat64Input stores a 64bit floating point number into 4 input registers at startIdx.
 func (interpret *DataInterpreter) PutFloat64Input(dm DataModel, startIdx int, v float64) Exception {
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
 	return interpret.PutUint64Input(dm, startIdx, math.Float64bits(v))
 }
+
+// ReadBytesInput reads data from the input registers of the data model into dst starting at startIdx.
 func (interpret *DataInterpreter) ReadBytesInput(dm DataModel, dst []byte, startIdx int) (int, Exception) {
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
 	return interpret.readBytes(dst, startIdx, dm.GetInputRegister)
 }
 
+// ReadBytesHolding reads data from the holding registers of the data model into dst starting at startIdx.
 func (interpret *DataInterpreter) ReadBytesHolding(dm DataModel, dst []byte, startIdx int) (int, Exception) {
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
 	return interpret.readBytes(dst, startIdx, dm.GetHoldingRegister)
 }
 
+// WriteBytesInput writes the data byte slice into the input registers of the data model starting at startIdx.
 func (interpret *DataInterpreter) WriteBytesInput(dm DataModel, data []byte, startIdx int) (int, Exception) {
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
 	return interpret.writeBytes(data, startIdx, dm.SetInputRegister, dm.GetInputRegister)
 }
 
+// WriteBytesHolding writes the data byte slice into the holding registers of the data model starting at startIdx.
 func (interpret *DataInterpreter) WriteBytesHolding(dm DataModel, data []byte, startIdx int) (int, Exception) {
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
 	return interpret.writeBytes(data, startIdx, dm.SetHoldingRegister, dm.GetHoldingRegister)
 }
 
@@ -595,4 +606,72 @@ func (interpret *DataInterpreter) writeBytes(data []byte, startIdx int, set16 fu
 		}
 	}
 	return len(data), ExceptionNone
+}
+
+// ReadUint16Input reads data from the input registers of the data model into dst starting at startIdx.
+func (interpret *DataInterpreter) ReadUint16Input(dm DataModel, dst []uint16, startIdx int) (int, Exception) {
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	return interpret.read16(dst, startIdx, dm.GetInputRegister)
+}
+
+// ReadUint16Holding reads data from the holding registers of the data model into dst starting at startIdx.
+func (interpret *DataInterpreter) ReadUint16Holding(dm DataModel, dst []uint16, startIdx int) (int, Exception) {
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	return interpret.read16(dst, startIdx, dm.GetHoldingRegister)
+}
+
+// WriteUint16Input writes the 16bit data slice into the input registers of the data model starting at startIdx.
+func (interpret *DataInterpreter) WriteUint16Input(dm DataModel, data []uint16, startIdx int) (int, Exception) {
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	return interpret.write16(data, startIdx, dm.SetInputRegister)
+}
+
+// WriteUint16Holding writes the 16bit data slice into the holding registers of the data model starting at startIdx.
+func (interpret *DataInterpreter) WriteUint16Holding(dm DataModel, data []uint16, startIdx int) (int, Exception) {
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	return interpret.write16(data, startIdx, dm.SetHoldingRegister)
+}
+
+func (interpret *DataInterpreter) read16(dst []uint16, startIdx int, get16 func(int) (uint16, Exception)) (int, Exception) {
+	for i := 0; i < len(dst); i++ {
+		u16, exc := get16(i + startIdx)
+		if exc != ExceptionNone {
+			return i, exc
+		}
+		dst[i] = u16
+	}
+	return len(dst), ExceptionNone
+}
+
+func (interpret *DataInterpreter) write16(data []uint16, startIdx int, set16 func(idx int, v uint16) Exception) (int, Exception) {
+	for i := 0; i < len(data); i++ {
+		exc := set16(i+startIdx, data[i])
+		if exc != ExceptionNone {
+			return i, exc
+		}
+	}
+	return len(data), ExceptionNone
+}
+
+// lockDataModel is a convenience function for when working with a DataModel interface
+// that is of underlying type *lockedDataModel. It returns the underlying DataModel
+// in said case and locks the data model returning the unlock function to be called
+// when done.
+//
+// If the DataModel is not of type *lockedDataModel, it returns the DataModel as is
+// and a no-op unlock function. Below is a safe usage example:
+//
+//	model, unlock := lockDataModel(model)
+//	defer unlock()
+//	// Do stuff with model within confines of function.
+func lockDataModel(dm DataModel) (unlocked DataModel, unlock func()) {
+	if ldm, ok := dm.(*lockedDataModel); ok {
+		ldm.mu.Lock()
+		return ldm.dm, ldm.mu.Unlock
+	}
+	return dm, func() {} // Unknown data model, just use as is and unlock is no-op.
 }
