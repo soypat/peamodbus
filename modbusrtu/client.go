@@ -1,6 +1,7 @@
 package modbusrtu
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -64,17 +65,29 @@ func (c *Client) SetTransport(port io.ReadWriter) {
 
 // ReadHoldingRegisters reads a sequence of holding registers from a device.
 func (c *Client) ReadHoldingRegisters(devAddr uint8, regAddr uint16, regs []uint16) error {
-	if len(regs) > 125 {
-		return errors.New("too many registers")
-	}
+	return c.readRegisters(peamodbus.FCReadHoldingRegisters, devAddr, regAddr, regs)
+}
+
+// ReadHoldingRegisters reads a sequence of holding registers from a device.
+func (c *Client) ReadInputRegisters(devAddr uint8, regAddr uint16, regs []uint16) error {
+	return c.readRegisters(peamodbus.FCReadInputRegisters, devAddr, regAddr, regs)
+}
+
+func (c *Client) readRegisters(fc peamodbus.FunctionCode, devAddr uint8, regAddr uint16, regs []uint16) (err error) {
 	c.muTx.Lock()
 	defer c.muTx.Unlock()
 	c.txbuf[0] = devAddr
-	n, err := c.tx.RequestReadHoldingRegisters(c.txbuf[1:], regAddr, uint16(len(regs)))
+	var n int
+	switch fc {
+	case peamodbus.FCReadHoldingRegisters:
+		n, err = c.tx.RequestReadHoldingRegisters(c.txbuf[1:], regAddr, uint16(len(regs)))
+	case peamodbus.FCReadInputRegisters:
+		n, err = c.tx.RequestReadInputRegisters(c.txbuf[1:], regAddr, uint16(len(regs)))
+	}
 	if err != nil {
 		return err
 	}
-	pdu, _, err := c.transaction(peamodbus.FCReadHoldingRegisters, devAddr, c.txbuf[:n+3])
+	pdu, _, err := c.transaction(fc, devAddr, c.txbuf[:n+3])
 	if err != nil {
 		return err
 	}
@@ -100,21 +113,11 @@ func (c *Client) WriteHoldingRegisters(devAddr uint8, regAddr uint16, regs []uin
 	if err != nil {
 		return err
 	}
-	pdu, _, err := c.transaction(peamodbus.FCWriteMultipleRegisters, devAddr, c.txbuf[:n+3])
+	_, _, err = c.transaction(peamodbus.FCWriteMultipleRegisters, devAddr, c.txbuf[:n+3])
 	if err != nil {
 		return err
 	}
-	pdu, err = peamodbus.ReceiveDataResponse(pdu)
-	if err != nil {
-		return err
-	}
-	if len(pdu) != len(regs)*2 {
-		return errors.New("wrong number of registers")
-	}
-	for i := range regs {
-		regs[i] = binary.BigEndian.Uint16(pdu[i*2:])
-	}
-	return nil
+	return err
 }
 
 // transaction performs a write and read transaction over the serial port.
@@ -123,11 +126,14 @@ func (c *Client) WriteHoldingRegisters(devAddr uint8, regAddr uint16, regs []uin
 func (c *Client) transaction(rxFCFilter peamodbus.FunctionCode, addrFilter uint8, packetMissingCRC []byte) (pdu []byte, addr uint8, err error) {
 	crc := generateCRC(packetMissingCRC[:len(packetMissingCRC)-2])
 	binary.LittleEndian.PutUint16(packetMissingCRC[len(packetMissingCRC)-2:], crc)
-	c.state.debug("write outgoing packet",
-		slog.Uint64("rtuaddr", uint64(packetMissingCRC[0])),
-		slog.String("fc", peamodbus.FunctionCode(packetMissingCRC[1]).String()),
-		slog.String("outgoing", string(packetMissingCRC)),
-	)
+	if c.state.log != nil && c.state.log.Handler().Enabled(context.TODO(), slog.LevelDebug) {
+		c.state.debug("write outgoing packet",
+			slog.Uint64("rtuaddr", uint64(packetMissingCRC[0])),
+			slog.String("fc", peamodbus.FunctionCode(packetMissingCRC[1]).String()),
+			slog.String("outgoing", string(packetMissingCRC)),
+		)
+	}
+
 	_, err = c.state.port.Write(packetMissingCRC)
 	if err != nil {
 		return nil, 0, err

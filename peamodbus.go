@@ -313,19 +313,78 @@ func (dm *lockedDataModel) SetDiscreteInput(i int, v bool) Exception {
 
 func NewDataInterpreter(cfg DataInterpreterConfig) (*DataInterpreter, error) {
 	di := &DataInterpreter{
-		badFloat: float32(cfg.BadFloat),
+		badFloat:        float32(cfg.BadFloat),
+		invertWordOrder: cfg.InvertWordOrder,
 	}
 	return di, nil
 }
 
 type DataInterpreterConfig struct {
-	BadFloat float64
+	BadFloat        float64
+	InvertWordOrder bool
 }
 
 // DataInterpreter provides primitive data type reading and writing from and to
 // modbus [DataModel]s.
 type DataInterpreter struct {
-	badFloat float32
+	badFloat        float32
+	invertWordOrder bool
+}
+
+// putUintReg is the basic building block for putting large integers into consecutive 16bit registers of a data model.
+func (interpret *DataInterpreter) putUintReg(regSet func(int, uint16) Exception, dm DataModel, startIdx, sizeWords int, value uint64) (_ Exception) {
+	if sizeWords < 2 || sizeWords > 4 || regSet == nil {
+		panic("bad sizeWords/nil func") // Internal bug.
+	}
+	if interpret.invertWordOrder {
+		for i := 0; i < sizeWords; i++ {
+			shift := (sizeWords - i - 1) * 16
+			exc := regSet(startIdx+i, uint16(value>>shift))
+			if exc != 0 {
+				return exc
+			}
+		}
+	} else {
+		for i := 0; i < sizeWords; i++ {
+			shift := i * 16
+			exc := regSet(startIdx+i, uint16(value>>shift))
+			if exc != 0 {
+				return exc
+			}
+		}
+	}
+
+	return 0
+
+}
+
+// uintReg is the basic building block for interpreting consecutive 16bit registers.
+func (interpret *DataInterpreter) uintReg(regGet func(int) (uint16, Exception), dm DataModel, startIdx, sizeWords int) (v uint64, _ Exception) {
+	if sizeWords < 2 || sizeWords > 4 || regGet == nil {
+		panic("bad sizeWords/nil func") // Internal bug.
+	}
+	if interpret.invertWordOrder {
+		for i := 0; i < sizeWords; i++ {
+			u16, exc := regGet(startIdx + i)
+			if exc != ExceptionNone {
+				return 0, exc
+			}
+
+			shift := (sizeWords - i - 1) * 16
+			v |= uint64(u16) << shift
+		}
+	} else {
+		for i := 0; i < sizeWords; i++ {
+			u16, exc := regGet(startIdx + i)
+			if exc != ExceptionNone {
+				return 0, exc
+			}
+
+			shift := i * 16
+			v |= uint64(u16) << shift
+		}
+	}
+	return v, ExceptionNone
 }
 
 // Int16Holding interprets the holding register at i as a signed 16 bit integer.
@@ -339,26 +398,17 @@ func (interpret *DataInterpreter) Int16Holding(dm DataModel, i int) (int16, Exce
 
 // Uint32Holding interprets consecutive 32bit holding register data at startIdx as a unsigned integer.
 func (interpret *DataInterpreter) Uint32Holding(dm DataModel, startIdx int) (v uint32, _ Exception) {
-	for i := 0; i < 2; i++ {
-		u16, exc := dm.GetHoldingRegister(startIdx + i)
-		if exc != ExceptionNone {
-			return 0, exc
-		}
-		v |= uint32(u16) << (16 - i*16)
-	}
-	return v, ExceptionNone
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	v64, exc := interpret.uintReg(dm.GetHoldingRegister, dm, startIdx, 2)
+	return uint32(v64), exc
 }
 
 // Uint64Holding interprets consecutive 64bit holding register data at startIdx as a unsigned integer.
 func (interpret *DataInterpreter) Uint64Holding(dm DataModel, startIdx int) (v uint64, _ Exception) {
-	for i := 0; i < 4; i++ {
-		u16, exc := dm.GetHoldingRegister(startIdx + i)
-		if exc != ExceptionNone {
-			return 0, exc
-		}
-		v |= uint64(u16) << (48 - i*16)
-	}
-	return v, ExceptionNone
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	return interpret.uintReg(dm.GetHoldingRegister, dm, startIdx, 4)
 }
 
 // Int32Holding interprets consecutive 32bit holding register data at startIdx as a signed integer.
@@ -406,26 +456,17 @@ func (interpret *DataInterpreter) Int16Input(dm DataModel, i int) (int16, Except
 
 // Uint32Input interprets consecutive 32bit input register data at startIdx as a unsigned integer.
 func (interpret *DataInterpreter) Uint32Input(dm DataModel, startIdx int) (v uint32, _ Exception) {
-	for i := 0; i < 2; i++ {
-		u16, exc := dm.GetInputRegister(startIdx + i)
-		if exc != ExceptionNone {
-			return 0, exc
-		}
-		v |= uint32(u16) << (16 - i*16)
-	}
-	return v, ExceptionNone
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	v64, exc := interpret.uintReg(dm.GetInputRegister, dm, startIdx, 2)
+	return uint32(v64), exc
 }
 
 // Uint64Input interprets consecutive 64bit input register data at startIdx as a unsigned integer.
 func (interpret *DataInterpreter) Uint64Input(dm DataModel, startIdx int) (v uint64, _ Exception) {
-	for i := 0; i < 4; i++ {
-		u16, exc := dm.GetInputRegister(startIdx + i)
-		if exc != ExceptionNone {
-			return 0, exc
-		}
-		v |= uint64(u16) << (48 - i*16)
-	}
-	return v, ExceptionNone
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	return interpret.uintReg(dm.GetInputRegister, dm, startIdx, 4)
 }
 
 // Int32Input interprets consecutive 32bit input register data at startIdx as a signed integer.
@@ -464,28 +505,16 @@ func (interpret *DataInterpreter) Float64Input(dm DataModel, startIdx int) (floa
 
 // PutUint64Holding stores a 64bit unsigned integer into 4 holding registers at startIdx.
 func (interpret *DataInterpreter) PutUint64Holding(dm DataModel, startIdx int, v uint64) Exception {
-	const sizeInWords = 4
-	for i := 0; i < sizeInWords; i++ {
-		shift := (sizeInWords - i - 1) * 16
-		exc := dm.SetHoldingRegister(startIdx+i, uint16(v>>shift))
-		if exc != 0 {
-			return exc
-		}
-	}
-	return 0
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	return interpret.putUintReg(dm.SetHoldingRegister, dm, startIdx, 4, v)
 }
 
 // PutUint32Holding stores a 32bit unsigned integer into 2 holding registers at startIdx.
 func (interpret *DataInterpreter) PutUint32Holding(dm DataModel, startIdx int, v uint32) Exception {
-	const sizeInWords = 2
-	for i := 0; i < sizeInWords; i++ {
-		shift := (sizeInWords - i - 1) * 16
-		exc := dm.SetHoldingRegister(startIdx+i, uint16(v>>shift))
-		if exc != 0 {
-			return exc
-		}
-	}
-	return 0
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	return interpret.putUintReg(dm.SetHoldingRegister, dm, startIdx, 2, uint64(v))
 }
 
 // PutFloat32Holding stores a 32bit floating point number into 2 holding registers at startIdx.
@@ -500,34 +529,20 @@ func (interpret *DataInterpreter) PutFloat64Holding(dm DataModel, startIdx int, 
 
 // PutUint64Input stores a 64bit unsigned integer into 4 input registers at startIdx.
 func (interpret *DataInterpreter) PutUint64Input(dm DataModel, startIdx int, v uint64) Exception {
-	const sizeInWords = 4
-	for i := 0; i < sizeInWords; i++ {
-		shift := (sizeInWords - i - 1) * 16
-		exc := dm.SetInputRegister(startIdx+i, uint16(v>>shift))
-		if exc != 0 {
-			return exc
-		}
-	}
-	return 0
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	return interpret.putUintReg(dm.SetInputRegister, dm, startIdx, 4, v)
 }
 
 // PutUint32Input stores a 32bit unsigned integer into 2 input registers at startIdx.
 func (interpret *DataInterpreter) PutUint32Input(dm DataModel, startIdx int, v uint32) Exception {
-	const sizeInWords = 2
-	for i := 0; i < sizeInWords; i++ {
-		shift := (sizeInWords - i - 1) * 16
-		exc := dm.SetInputRegister(startIdx+i, uint16(v>>shift))
-		if exc != 0 {
-			return exc
-		}
-	}
-	return 0
+	dm, unlock := lockDataModel(dm)
+	defer unlock()
+	return interpret.putUintReg(dm.SetInputRegister, dm, startIdx, 2, uint64(v))
 }
 
 // PutFloat32Input stores a 32bit floating point number into 2 input registers at startIdx.
 func (interpret *DataInterpreter) PutFloat32Input(dm DataModel, startIdx int, v float32) Exception {
-	dm, unlock := lockDataModel(dm)
-	defer unlock()
 	return interpret.PutUint32Input(dm, startIdx, math.Float32bits(v))
 }
 

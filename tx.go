@@ -276,8 +276,8 @@ func DecodeRequest(pdu []byte) (req Request, dataoffset int, err error) {
 type Tx struct{}
 
 var (
-	errDiscreteOOB = errors.New("discrete address inputs/coils out of bounds (0..0xffff) or too many (1..2000)")
-	errRegisterOOB = errors.New("register address out of bounds (0..0xffff) or too many (1..125 for read, 1..123 for write)")
+	errDiscreteOOB = errors.New("discrete address inputs/coils out of bounds (0..0xffff) or bad quantity (1..2000)")
+	errRegisterOOB = errors.New("register address out of bounds (0..0xffff) or bad quantity (1..125 for read, 1..123 for write)")
 	errCoilPacking = errors.New("RequestWriteMultipleCoils: packed coil data length does not match argument quantityOfOutputs")
 )
 
