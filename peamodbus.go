@@ -313,22 +313,27 @@ func (dm *lockedDataModel) SetDiscreteInput(i int, v bool) Exception {
 
 func NewDataInterpreter(cfg DataInterpreterConfig) (*DataInterpreter, error) {
 	di := &DataInterpreter{
-		badFloat:        float32(cfg.BadFloat),
-		invertWordOrder: cfg.InvertWordOrder,
+		badFloat: float32(cfg.BadFloat),
+		mswFirst: cfg.MostSignificantWordFirst,
 	}
 	return di, nil
 }
 
 type DataInterpreterConfig struct {
-	BadFloat        float64
-	InvertWordOrder bool
+	// BadFloat is the value to return when a float conversion fails.
+	// Ideally the exception should be checked and the value ignored.
+	BadFloat float64
+	// MostSignificantWordFirst can be set to interpret contiguous modbus 16bit register data
+	// as having the first 16bit register be the most significant word (MSW).
+	// If not set the first 16bit register is the least significant word (LSW).
+	MostSignificantWordFirst bool
 }
 
 // DataInterpreter provides primitive data type reading and writing from and to
 // modbus [DataModel]s.
 type DataInterpreter struct {
-	badFloat        float32
-	invertWordOrder bool
+	badFloat float32
+	mswFirst bool
 }
 
 // putUintReg is the basic building block for putting large integers into consecutive 16bit registers of a data model.
@@ -336,7 +341,7 @@ func (interpret *DataInterpreter) putUintReg(regSet func(int, uint16) Exception,
 	if sizeWords < 2 || sizeWords > 4 || regSet == nil {
 		panic("bad sizeWords/nil func") // Internal bug.
 	}
-	if interpret.invertWordOrder {
+	if interpret.mswFirst {
 		for i := 0; i < sizeWords; i++ {
 			shift := (sizeWords - i - 1) * 16
 			exc := regSet(startIdx+i, uint16(value>>shift))
@@ -353,9 +358,7 @@ func (interpret *DataInterpreter) putUintReg(regSet func(int, uint16) Exception,
 			}
 		}
 	}
-
-	return 0
-
+	return ExceptionNone
 }
 
 // uintReg is the basic building block for interpreting consecutive 16bit registers.
@@ -363,7 +366,7 @@ func (interpret *DataInterpreter) uintReg(regGet func(int) (uint16, Exception), 
 	if sizeWords < 2 || sizeWords > 4 || regGet == nil {
 		panic("bad sizeWords/nil func") // Internal bug.
 	}
-	if interpret.invertWordOrder {
+	if interpret.mswFirst {
 		for i := 0; i < sizeWords; i++ {
 			u16, exc := regGet(startIdx + i)
 			if exc != ExceptionNone {

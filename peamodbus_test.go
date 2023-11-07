@@ -292,11 +292,11 @@ func TestInferTxRequestLength(t *testing.T) {
 	}
 }
 
-func TestDataInterpreter_inverted(t *testing.T) {
+func TestDataInterpreter_msw(t *testing.T) {
 	data := &BlockedModel{}
 	model := ConcurrencySafeDataModel(data)
 	interpret, _ := NewDataInterpreter(DataInterpreterConfig{
-		InvertWordOrder: true,
+		MostSignificantWordFirst: true,
 	})
 	rng := rand.New(rand.NewSource(1))
 	var buf [8]byte
@@ -401,11 +401,11 @@ func TestDataInterpreter_inverted(t *testing.T) {
 	}
 }
 
-func TestDataInterpreter_notinverted(t *testing.T) {
+func TestDataInterpreter_lsw(t *testing.T) {
 	data := &BlockedModel{}
 	model := ConcurrencySafeDataModel(data)
 	interpret, _ := NewDataInterpreter(DataInterpreterConfig{
-		InvertWordOrder: false,
+		MostSignificantWordFirst: false,
 	})
 	rng := rand.New(rand.NewSource(1))
 	var buf [8]byte
