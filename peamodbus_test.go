@@ -8,7 +8,8 @@ import (
 )
 
 func TestReadHoldingRegisters_loopback(t *testing.T) {
-	model := &BlockedModel{}
+	var model DataModel = &BlockedModel{}
+	model = ConcurrencySafeDataModel(model)
 	model.SetHoldingRegister(0, 0)
 	var reqBuf, responseBuf [256]byte
 	tx := &Tx{}
@@ -293,6 +294,7 @@ func TestInferTxRequestLength(t *testing.T) {
 
 func TestDataInterpreter_inverted(t *testing.T) {
 	data := &BlockedModel{}
+	model := ConcurrencySafeDataModel(data)
 	interpret, _ := NewDataInterpreter(DataInterpreterConfig{
 		InvertWordOrder: true,
 	})
@@ -300,11 +302,11 @@ func TestDataInterpreter_inverted(t *testing.T) {
 	var buf [8]byte
 	for addr := 0; addr < 122; addr++ {
 		f32 := rng.Float32()
-		exc := interpret.PutFloat32Holding(data, addr, f32)
+		exc := interpret.PutFloat32Holding(model, addr, f32)
 		if exc != 0 {
 			t.Fatal("putf32", addr, exc)
 		}
-		got, exc := interpret.Float32Holding(data, addr)
+		got, exc := interpret.Float32Holding(model, addr)
 		if exc != 0 {
 			t.Fatal("getf32", addr, exc)
 		}
@@ -314,18 +316,18 @@ func TestDataInterpreter_inverted(t *testing.T) {
 
 		// 64 bit test.
 		f64 := rng.Float64()
-		exc = interpret.PutFloat64Holding(data, addr, f64)
+		exc = interpret.PutFloat64Holding(model, addr, f64)
 		if exc != 0 {
 			t.Fatal("putf64", addr, exc)
 		}
-		got64, exc := interpret.Float64Holding(data, addr)
+		got64, exc := interpret.Float64Holding(model, addr)
 		if exc != 0 {
 			t.Fatal("getf64", addr, exc)
 		}
 		if got64 != f64 {
 			t.Fatalf("read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
 		}
-		n, exc := interpret.ReadBytesHolding(data, buf[:8], addr)
+		n, exc := interpret.ReadBytesHolding(model, buf[:8], addr)
 		if n != 8 || exc != ExceptionNone {
 			t.Error("ReadBytesHolding failed", n, exc)
 		}
@@ -334,11 +336,11 @@ func TestDataInterpreter_inverted(t *testing.T) {
 			t.Fatalf("ReadBytesInput: input read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
 		}
 		buf = [8]byte{}
-		n, exc = interpret.WriteBytesHolding(data, buf[:8], addr)
+		n, exc = interpret.WriteBytesHolding(model, buf[:8], addr)
 		if n != 8 || exc != ExceptionNone {
 			t.Error("WriteBytesInput failed")
 		}
-		got64, exc = interpret.Float64Holding(data, addr)
+		got64, exc = interpret.Float64Holding(model, addr)
 		if exc != ExceptionNone {
 			t.Fatal("unexpected exception")
 		}
@@ -350,11 +352,11 @@ func TestDataInterpreter_inverted(t *testing.T) {
 	data = &BlockedModel{} // Reset model for input test.
 	for addr := 0; addr < 122; addr++ {
 		f32 := rng.Float32()
-		exc := interpret.PutFloat32Input(data, addr, f32)
+		exc := interpret.PutFloat32Input(model, addr, f32)
 		if exc != 0 {
 			t.Fatal("input putf32", addr, exc)
 		}
-		got, exc := interpret.Float32Input(data, addr)
+		got, exc := interpret.Float32Input(model, addr)
 		if exc != 0 {
 			t.Fatal("input getf32", addr, exc)
 		}
@@ -364,11 +366,11 @@ func TestDataInterpreter_inverted(t *testing.T) {
 
 		// 64 bit test.
 		f64 := rng.Float64()
-		exc = interpret.PutFloat64Input(data, addr, f64)
+		exc = interpret.PutFloat64Input(model, addr, f64)
 		if exc != 0 {
 			t.Fatal("input putf64", addr, exc)
 		}
-		got64, exc := interpret.Float64Input(data, addr)
+		got64, exc := interpret.Float64Input(model, addr)
 		if exc != 0 {
 			t.Fatal("input getf64", addr, exc)
 		}
@@ -376,7 +378,7 @@ func TestDataInterpreter_inverted(t *testing.T) {
 			t.Fatalf("input read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
 		}
 
-		n, exc := interpret.ReadBytesInput(data, buf[:8], addr)
+		n, exc := interpret.ReadBytesInput(model, buf[:8], addr)
 		if n != 8 || exc != ExceptionNone {
 			t.Error("ReadBytesInput failed")
 		}
@@ -385,11 +387,11 @@ func TestDataInterpreter_inverted(t *testing.T) {
 			t.Fatalf("ReadBytesInput: input read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
 		}
 		buf = [8]byte{}
-		n, exc = interpret.WriteBytesInput(data, buf[:8], addr)
+		n, exc = interpret.WriteBytesInput(model, buf[:8], addr)
 		if n != 8 || exc != ExceptionNone {
 			t.Error("WriteBytesInput failed", n, exc)
 		}
-		got64, exc = interpret.Float64Input(data, addr)
+		got64, exc = interpret.Float64Input(model, addr)
 		if exc != ExceptionNone {
 			t.Fatal("unexpected exception")
 		}
@@ -401,6 +403,7 @@ func TestDataInterpreter_inverted(t *testing.T) {
 
 func TestDataInterpreter_notinverted(t *testing.T) {
 	data := &BlockedModel{}
+	model := ConcurrencySafeDataModel(data)
 	interpret, _ := NewDataInterpreter(DataInterpreterConfig{
 		InvertWordOrder: false,
 	})
@@ -408,11 +411,11 @@ func TestDataInterpreter_notinverted(t *testing.T) {
 	var buf [8]byte
 	for addr := 0; addr < 122; addr++ {
 		f32 := rng.Float32()
-		exc := interpret.PutFloat32Holding(data, addr, f32)
+		exc := interpret.PutFloat32Holding(model, addr, f32)
 		if exc != 0 {
 			t.Fatal("putf32", addr, exc)
 		}
-		got, exc := interpret.Float32Holding(data, addr)
+		got, exc := interpret.Float32Holding(model, addr)
 		if exc != 0 {
 			t.Fatal("getf32", addr, exc)
 		}
@@ -422,11 +425,11 @@ func TestDataInterpreter_notinverted(t *testing.T) {
 
 		// 64 bit test.
 		f64 := rng.Float64()
-		exc = interpret.PutFloat64Holding(data, addr, f64)
+		exc = interpret.PutFloat64Holding(model, addr, f64)
 		if exc != 0 {
 			t.Fatal("putf64", addr, exc)
 		}
-		got64, exc := interpret.Float64Holding(data, addr)
+		got64, exc := interpret.Float64Holding(model, addr)
 		if exc != 0 {
 			t.Fatal("getf64", addr, exc)
 		}
@@ -434,11 +437,11 @@ func TestDataInterpreter_notinverted(t *testing.T) {
 			t.Fatalf("read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
 		}
 
-		n, exc := interpret.WriteBytesHolding(data, buf[:8], addr)
+		n, exc := interpret.WriteBytesHolding(model, buf[:8], addr)
 		if n != 8 || exc != ExceptionNone {
 			t.Error("WriteBytesInput failed")
 		}
-		got64, exc = interpret.Float64Holding(data, addr)
+		got64, exc = interpret.Float64Holding(model, addr)
 		if exc != ExceptionNone {
 			t.Fatal("unexpected exception")
 		}
@@ -450,11 +453,11 @@ func TestDataInterpreter_notinverted(t *testing.T) {
 	data = &BlockedModel{} // Reset model for input test.
 	for addr := 0; addr < 122; addr++ {
 		f32 := rng.Float32()
-		exc := interpret.PutFloat32Input(data, addr, f32)
+		exc := interpret.PutFloat32Input(model, addr, f32)
 		if exc != 0 {
 			t.Fatal("input putf32", addr, exc)
 		}
-		got, exc := interpret.Float32Input(data, addr)
+		got, exc := interpret.Float32Input(model, addr)
 		if exc != 0 {
 			t.Fatal("input getf32", addr, exc)
 		}
@@ -464,11 +467,11 @@ func TestDataInterpreter_notinverted(t *testing.T) {
 
 		// 64 bit test.
 		f64 := rng.Float64()
-		exc = interpret.PutFloat64Input(data, addr, f64)
+		exc = interpret.PutFloat64Input(model, addr, f64)
 		if exc != 0 {
 			t.Fatal("input putf64", addr, exc)
 		}
-		got64, exc := interpret.Float64Input(data, addr)
+		got64, exc := interpret.Float64Input(model, addr)
 		if exc != 0 {
 			t.Fatal("input getf64", addr, exc)
 		}
@@ -476,11 +479,11 @@ func TestDataInterpreter_notinverted(t *testing.T) {
 			t.Fatalf("input read back fail: got=%x want=%x", math.Float64bits(got64), math.Float64bits(f64))
 		}
 
-		n, exc := interpret.WriteBytesInput(data, buf[:8], addr)
+		n, exc := interpret.WriteBytesInput(model, buf[:8], addr)
 		if n != 8 || exc != ExceptionNone {
 			t.Error("WriteBytesInput failed", n, exc)
 		}
-		got64, exc = interpret.Float64Input(data, addr)
+		got64, exc = interpret.Float64Input(model, addr)
 		if exc != ExceptionNone {
 			t.Fatal("unexpected exception")
 		}
